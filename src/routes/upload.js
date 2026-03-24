@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { authenticateToken } from "../middleware/auth.js";
+import { resolvePublicUploadUrl } from "../utils/publicUploadUrl.js";
 
 const router = Router();
 
@@ -137,7 +138,7 @@ router.post(
       // 构建公开可访问的 URL
       // 相对路径：uploads/userId/... 或 uploads/userId/boardId/...
       const relativePath = req.file.path.replace(uploadsDir + path.sep, "").replace(/\\/g, "/");
-      const publicUrl = `${req.protocol}://${req.get("host")}/uploads/${relativePath}`;
+      const publicUrl = resolvePublicUploadUrl(relativePath, req);
 
       res.json({
         success: true,

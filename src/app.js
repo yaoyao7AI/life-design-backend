@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
 
 import affirmationsRouter from "./routes/affirmations.js";
 import authRouter from "./routes/auth.js";
@@ -17,44 +18,71 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// CORS 配置 - 允许前端访问
-app.use(cors({
-  origin: function (origin, callback) {
-    // 允许的来源列表
-    const allowedOrigins = [
-      'http://localhost:5173',      // Vite 开发服务器
-      'http://localhost:5174',       // 其他开发端口
-      'http://127.0.0.1:5173',       // 本地访问
-      'https://life-design.me',      // 生产环境域名
-      'https://www.life-design.me',  // www 子域名（生产环境）
-      'http://life-design.me',       // HTTP 生产环境（如果有）
-      'http://www.life-design.me',   // HTTP www 子域名（如果有）
+function parseCorsOrigins(value) {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+const isProduction = process.env.NODE_ENV === "production";
+
+// 位于 Nginx 等反向代理之后时，使 req.protocol / req.hostname 反映 X-Forwarded-*（上传返回的 URL 等）
+if (isProduction) {
+  app.set("trust proxy", 1);
+}
+
+const corsOriginsFromEnv = parseCorsOrigins(process.env.CORS_ORIGINS);
+const defaultProdOrigins = [
+  "https://life-design.me",
+  "https://www.life-design.me",
+];
+const allowedOrigins = isProduction
+  ? (corsOriginsFromEnv.length > 0 ? corsOriginsFromEnv : defaultProdOrigins)
+  : [
+      "http://localhost:5173",
+      "http://localhost:5174",
+      "http://127.0.0.1:5173",
+      ...defaultProdOrigins,
     ];
-    
-    // 开发环境或无 origin（如 Postman）允许所有来源
-    if (!origin || process.env.NODE_ENV === 'development') {
-      return callback(null, true);
-    }
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      // 生产环境允许所有来源（临时，建议改为只允许指定域名）
-      callback(null, true);
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  exposedHeaders: ['Content-Length', 'X-Foo', 'X-Bar'],
-  preflightContinue: false,
-  optionsSuccessStatus: 204
-}));
+
+// CORS 配置 - 生产环境默认只允许指定域名
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // 无 origin：curl / Postman / 同源请求等，允许
+      if (!origin) return callback(null, true);
+
+      // 开发环境：放开（避免本地调试频繁改配置）
+      if (!isProduction) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // 不抛错（避免变成 500），仅不返回 CORS 头，让浏览器自行拦截
+      return callback(null, false);
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    exposedHeaders: ["Content-Length", "X-Foo", "X-Bar"],
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
+  })
+);
 
 app.use(express.json());
 
 // 静态文件服务 - 提供上传文件的访问
-app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
+const uploadsDir = path.join(__dirname, "../uploads");
+try {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+} catch (err) {
+  console.error("[uploads] 无法创建 uploads 目录:", err?.message || err);
+}
+app.use("/uploads", express.static(uploadsDir));
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
