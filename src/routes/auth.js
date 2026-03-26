@@ -3,13 +3,26 @@ import { pool } from "../db.js";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import { sendSMS } from "../utils/smsClient.js";
+import bcrypt from "bcryptjs";
 
 dotenv.config();
 
 const router = Router();
+const isDebugCodeEnabled =
+  process.env.NODE_ENV !== "production" &&
+  ["1", "true", "yes", "on"].includes(
+    String(process.env.AUTH_DEBUG_CODE_ENABLED || "").trim().toLowerCase()
+  );
+const sendCodeCooldownMs = Math.max(0, Number(process.env.SEND_CODE_COOLDOWN_MS || 60_000));
 
 // 临时验证码存储（后续可换 Redis）
 const codeStorage = {};
+
+function maskPhone(phone) {
+  const s = String(phone || "");
+  if (s.length < 7) return s;
+  return `${s.slice(0, 3)}****${s.slice(-4)}`;
+}
 
 // 为所有路由添加方法检查中间件（处理 405 错误）
 router.use((req, res, next) => {
@@ -29,23 +42,66 @@ router.post("/send-code", async (req, res) => {
     return res.status(400).json({ error: "手机号不能为空" });
   }
 
+  const now = Date.now();
+  const lastSentAt = codeStorage[phone]?.lastSentAt || 0;
+  if (now - lastSentAt < sendCodeCooldownMs) {
+    const retryAfterSec = Math.max(1, Math.ceil((sendCodeCooldownMs - (now - lastSentAt)) / 1000));
+    return res.status(429).json({
+      error: "发送过于频繁，请稍后再试",
+      code: "SMS_RATE_LIMIT_LOCAL",
+      retry_after_sec: retryAfterSec,
+    });
+  }
+
   // 生成 6 位验证码
   const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-  codeStorage[phone] = {
-    code,
-    expires: Date.now() + 5 * 60 * 1000 // 验证码 5 分钟过期
-  };
-
-  console.log("[发送验证码]", phone, code);
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[发送验证码]", phone, code);
+  } else {
+    console.log("[发送验证码] 生产环境触发，手机号:", maskPhone(phone));
+  }
 
   // 发送真实短信
-  const success = await sendSMS(phone, code);
+  const smsResultRaw = await sendSMS(phone, code);
+  const smsResult =
+    typeof smsResultRaw === "boolean"
+      ? { ok: smsResultRaw, reason: smsResultRaw ? "OK" : "UNKNOWN" }
+      : smsResultRaw;
 
-  if (!success) {
+  if (!smsResult?.ok) {
+    if (process.env.NODE_ENV !== "production") {
+      const debugHint = isDebugCodeEnabled
+        ? "，可用 GET /api/auth/debug-code/:phone 查看"
+        : "，可查看服务端日志";
+      codeStorage[phone] = {
+        code,
+        expires: Date.now() + 5 * 60 * 1000, // 验证码 5 分钟过期
+        lastSentAt: now,
+      };
+      console.warn(
+        `[发送验证码] 开发环境：短信未发送成功，验证码已写入内存，接口仍返回 200 便于联调${debugHint}`
+      );
+      return res.json({
+        success: true,
+        msg: `验证码已生成（开发环境未发短信，请用控制台日志${debugHint}）`,
+      });
+    }
+    if (smsResult?.reason === "RATE_LIMIT") {
+      return res.status(429).json({
+        error: "短信发送过于频繁，请稍后再试",
+        code: "SMS_RATE_LIMIT_PROVIDER",
+        provider_code: smsResult.providerCode || null,
+      });
+    }
     return res.status(500).json({ error: "短信发送失败" });
   }
 
+  codeStorage[phone] = {
+    code,
+    expires: Date.now() + 5 * 60 * 1000, // 验证码 5 分钟过期
+    lastSentAt: now,
+  };
   res.json({ success: true, msg: "验证码发送成功" });
 });
 
@@ -71,55 +127,29 @@ router.post("/login", async (req, res) => {
   }
 
   try {
-    // 获取连接
-    console.log('[登录] 开始获取连接...');
-    const connection = await pool.getConnection();
-    console.log('[登录] ✅ 获取连接成功');
-    
-    try {
-      console.log('[登录] 开始查询用户，phone:', phone);
-      // 查用户是否存在
-      const [rows] = await connection.query("SELECT * FROM users WHERE phone = ?", [phone]);
-      console.log('[登录] ✅ 查询用户成功，结果数量:', rows.length);
+    // 使用 pool.query：每次查询自动从池取连接并在结束后归还，避免与泄漏的独占连接死锁
+    const [rows] = await pool.query("SELECT id FROM users WHERE phone = ? LIMIT 1", [phone]);
 
-      let userId;
-
-      if (rows.length === 0) {
-        console.log('[登录] 用户不存在，创建新用户');
-        // 创建新用户
-        const [result] = await connection.query("INSERT INTO users (phone) VALUES (?)", [phone]);
-        userId = result.insertId;
-        console.log('[登录] ✅ 创建用户成功，userId:', userId);
-      } else {
-        userId = rows[0].id;
-        console.log('[登录] 用户已存在，userId:', userId);
-      }
-      
-      // 释放连接
-      console.log('[登录] 释放连接');
-      connection.release();
-      console.log('[登录] ✅ 连接已释放');
-
-      // 生成 JWT token
-      const token = jwt.sign(
-        { id: userId, phone },
-        process.env.JWT_SECRET,
-        { expiresIn: "30d" }
-      );
-
-      console.log('[登录] ✅ 登录成功，userId:', userId);
-      res.json({
-        success: true,
-        token,
-        user: { id: userId, phone }
-      });
-    } catch (queryErr) {
-      console.error('[登录] ❌ 查询错误:', queryErr.code, queryErr.message);
-      console.error('[登录] ❌ 查询错误堆栈:', queryErr.stack);
-      // 如果查询出错，释放连接
-      connection.release();
-      throw queryErr;
+    let userId;
+    if (rows.length === 0) {
+      const [result] = await pool.query("INSERT INTO users (phone) VALUES (?)", [phone]);
+      userId = result.insertId;
+    } else {
+      userId = rows[0].id;
     }
+
+    const accessTokenExpiresIn = process.env.JWT_ACCESS_EXPIRES || "30d";
+    const token = jwt.sign(
+      { id: userId, phone },
+      process.env.JWT_SECRET,
+      { expiresIn: accessTokenExpiresIn }
+    );
+
+    res.json({
+      success: true,
+      token,
+      user: { id: userId, phone }
+    });
   } catch (err) {
     console.error("[登录错误]", err);
     console.error("[登录错误] 完整错误:", err.stack);
@@ -263,11 +293,11 @@ router.post("/update-password", async (req, res) => {
       });
     }
 
-    // TODO: 实际应用中应该对密码进行加密（bcrypt）
-    // 这里暂时直接存储，生产环境需要加密
+    // 生产环境：对密码进行哈希后存储（避免明文）
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
     await pool.query(
       "UPDATE users SET password = ? WHERE id = ?",
-      [newPassword, userId]
+      [hashedPassword, userId]
     );
 
     res.json({ 
@@ -287,7 +317,7 @@ router.post("/update-password", async (req, res) => {
  * 开发环境查看验证码（不要在生产开启）
  * GET /api/auth/debug-code/:phone
  */
-if (process.env.NODE_ENV !== "production") {
+if (isDebugCodeEnabled) {
   router.get("/debug-code/:phone", (req, res) => {
     const { phone } = req.params;
     const record = codeStorage[phone];
