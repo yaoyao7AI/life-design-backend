@@ -6,7 +6,7 @@ import {
   normalizeElementForResponse,
 } from "./vision-element-normalizers.js";
 import { normalizeUploadsUrl } from "../utils/publicUploadUrl.js";
-import { parseMonthRange, currentMonthRange, toDateOrNull } from "../utils/visionTodoUtils.js";
+import { monthRangeFromVisionRequest, toDateOrNull } from "../utils/visionTodoUtils.js";
 
 const router = Router();
 
@@ -642,7 +642,7 @@ router.put("/:id/todos/:todoId", async (req, res) => {
     await ensureVisionBoardTodoSchema();
     const userId = req.userId;
     const { id: boardId, todoId } = req.params;
-    const monthRange = parseMonthRange(req.query.month) || currentMonthRange();
+    const monthRange = monthRangeFromVisionRequest(req);
     const linkedTodoId =
       hasOwn(req.body, "linked_todo_id") || hasOwn(req.body, "linkedTodoId")
         ? (req.body.linked_todo_id ?? req.body.linkedTodoId ?? null)
@@ -880,7 +880,7 @@ router.get("/:id/todos/linkable", async (req, res) => {
     const userId = req.userId;
     const { id: boardId } = req.params;
     const month = req.query.month;
-    const monthRange = parseMonthRange(month) || currentMonthRange();
+    const monthRange = monthRangeFromVisionRequest(req);
 
     const [boards] = await pool.query(
       "SELECT id FROM vision_boards WHERE id = ? AND user_id = ? LIMIT 1",
@@ -929,7 +929,7 @@ router.get("/actions/linked-todos", async (req, res) => {
     await ensureVisionBoardTodoSchema();
     const userId = req.userId;
     const tag = hasOwn(req.query, "tag") ? String(req.query.tag || "").trim() : "";
-    const monthRange = parseMonthRange(req.query.month) || currentMonthRange();
+    const monthRange = monthRangeFromVisionRequest(req);
 
     const whereTag = tag ? "AND vbt.tag = ?" : "";
     const params = [userId, monthRange.start, monthRange.end];

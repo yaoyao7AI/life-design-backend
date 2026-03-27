@@ -144,30 +144,31 @@ router.post("/", async (req, res) => {
   const requestId = normalizeRequestId(body.request_id ?? body.requestId);
   const todo = body.todo && typeof body.todo === "object" ? body.todo : body;
   const expectedRev = parseExpectedRev(todo.expected_rev ?? todo.expectedRev);
+
+  const id =
+    (typeof todo.id === "string" && todo.id.trim()) ||
+    `todo_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+
+  const content = typeof todo.content === "string" ? todo.content.trim() : "";
+  if (!content) return res.status(400).json({ error: "content 不能为空" });
+  if (content.length > 200) return res.status(400).json({ error: "content 超过 200 字" });
+
+  const tag = normalizeTodoTag(todo.tag);
+  const dueAt = todo.due_at ?? todo.dueAt ?? todo.due_time ?? todo.dueTime;
+  const dueAtDt = dueAt ? new Date(dueAt) : null;
+  const completed = !!todo.completed;
+  const completedAt = todo.completed_at ?? todo.completedAt;
+  const completedAtDt = completedAt ? new Date(completedAt) : null;
+
+  const now = nowDate();
+  const createdAt = todo.created_at ?? todo.createdAt;
+  const createdAtDt = createdAt ? new Date(createdAt) : now;
+
   let connection;
 
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
-
-    const id =
-      (typeof todo.id === "string" && todo.id.trim()) ||
-      `todo_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-
-    const content = typeof todo.content === "string" ? todo.content.trim() : "";
-    if (!content) return res.status(400).json({ error: "content 不能为空" });
-    if (content.length > 200) return res.status(400).json({ error: "content 超过 200 字" });
-
-    const tag = normalizeTodoTag(todo.tag);
-    const dueAt = todo.due_at ?? todo.dueAt;
-    const dueAtDt = dueAt ? new Date(dueAt) : null;
-    const completed = !!todo.completed;
-    const completedAt = todo.completed_at ?? todo.completedAt;
-    const completedAtDt = completedAt ? new Date(completedAt) : null;
-
-    const now = nowDate();
-    const createdAt = todo.created_at ?? todo.createdAt;
-    const createdAtDt = createdAt ? new Date(createdAt) : now;
 
     const [existingRows] = await connection.query(
       `
