@@ -31,6 +31,29 @@ let visionElementColumnSetPromise;
 let visionBoardColumnSetPromise;
 let visionBoardTodoSchemaEnsuredPromise;
 
+function isBase64DataUrl(value) {
+  if (typeof value !== "string") return false;
+  return /^data:[^;]+;base64,/i.test(value.trim());
+}
+
+function normalizeImageUrlField(body) {
+  const imageUrlInput = getCompatFieldFromKeys(body || {}, ["image_url", "imageUrl"]);
+  if (imageUrlInput === undefined) return { provided: false, value: undefined };
+  if (imageUrlInput === null || imageUrlInput === "") return { provided: true, value: null };
+  const normalized = String(imageUrlInput).trim();
+  if (!normalized) return { provided: true, value: null };
+  if (isBase64DataUrl(normalized)) {
+    return { provided: true, invalidReason: "BASE64_NOT_ALLOWED" };
+  }
+  return { provided: true, value: normalized };
+}
+
+function rejectBase64Image(res) {
+  return res
+    .status(400)
+    .json({ error: "BASE64_NOT_ALLOWED", message: "检测到 base64 图片，请先上传后仅传 image_url" });
+}
+
 async function getVisionElementColumnSet() {
   if (!visionElementColumnSetPromise) {
     visionElementColumnSetPromise = pool
@@ -105,6 +128,7 @@ async function ensureVisionBoardTodoSchema() {
           vision_board_id BIGINT NOT NULL,
           title VARCHAR(200) NULL,
           content TEXT NULL,
+          image_url VARCHAR(1024) NULL,
           tag VARCHAR(20) NULL,
           occur_at DATETIME(3) NULL,
           sort_order INT NOT NULL DEFAULT 0,
@@ -118,6 +142,14 @@ async function ensureVisionBoardTodoSchema() {
           KEY idx_vbt_user_updated (user_id, updated_at, id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `);
+      const [imageUrlCols] = await pool.query(
+        "SHOW COLUMNS FROM vision_board_todos LIKE 'image_url'"
+      );
+      if (imageUrlCols.length === 0) {
+        await pool.query(
+          "ALTER TABLE vision_board_todos ADD COLUMN image_url VARCHAR(1024) NULL AFTER content"
+        );
+      }
     })().catch((err) => {
       visionBoardTodoSchemaEnsuredPromise = null;
       throw err;
@@ -133,6 +165,7 @@ function formatVisionTodo(row) {
     vision_board_id: row.vision_board_id,
     title: row.title,
     content: row.content,
+    image_url: row.image_url ?? null,
     tag: row.tag,
     occur_at: row.occur_at ? new Date(row.occur_at).toISOString() : null,
     sort_order: row.sort_order,
@@ -245,6 +278,9 @@ router.post("/", async (req, res) => {
     const coverOrThumbnail = normalizeUploadsUrl(
       getCompatField(req.body, "cover_url", "thumbnail")
     );
+    if (isBase64DataUrl(coverOrThumbnail)) {
+      return rejectBase64Image(res);
+    }
     const backgroundColor = getCompatFieldFromKeys(req.body, [
       "background_color",
       "backgroundColor",
@@ -308,6 +344,9 @@ router.put("/:id", async (req, res) => {
     const coverOrThumbnail = normalizeUploadsUrl(
       getCompatField(req.body, "cover_url", "thumbnail")
     );
+    if (isBase64DataUrl(coverOrThumbnail)) {
+      return rejectBase64Image(res);
+    }
     const backgroundColor = getCompatFieldFromKeys(req.body, [
       "background_color",
       "backgroundColor",
@@ -442,6 +481,11 @@ router.post("/:id/elements", async (req, res) => {
     // 插入新元素
     if (elements && elements.length > 0) {
       const normalizedElements = elements.map(normalizeElementForPersistence);
+      for (const el of normalizedElements) {
+        if (el?.type === "image" && isBase64DataUrl(el?.content)) {
+          return rejectBase64Image(res);
+        }
+      }
       const values = normalizedElements.map((el) => {
         const row = [
           id,
@@ -509,7 +553,7 @@ router.get("/:id/todos", async (req, res) => {
     }
 
     const [rows] = await connection.query(
-      `SELECT id, vision_board_id, title, content, tag, occur_at, sort_order, linked_todo_id, created_at, updated_at
+      `SELECT id, vision_board_id, title, content, image_url, tag, occur_at, sort_order, linked_todo_id, created_at, updated_at
        FROM vision_board_todos
        WHERE user_id = ? AND vision_board_id = ? AND deleted_at IS NULL
        ORDER BY sort_order ASC, id ASC`,
@@ -519,8 +563,8 @@ router.get("/:id/todos", async (req, res) => {
     if (rows.length === 0) {
       await connection.query(
         `INSERT INTO vision_board_todos
-         (user_id, vision_board_id, title, content, tag, occur_at, sort_order, linked_todo_id)
-         VALUES (?, ?, '', '', NULL, NULL, 1000, NULL)`,
+         (user_id, vision_board_id, title, content, image_url, tag, occur_at, sort_order, linked_todo_id)
+         VALUES (?, ?, '', '', NULL, NULL, NULL, 1000, NULL)`,
         [userId, boardId]
       );
     }
@@ -530,7 +574,7 @@ router.get("/:id/todos", async (req, res) => {
     connection = null;
 
     const [afterRows] = await pool.query(
-      `SELECT id, vision_board_id, title, content, tag, occur_at, sort_order, linked_todo_id, created_at, updated_at
+      `SELECT id, vision_board_id, title, content, image_url, tag, occur_at, sort_order, linked_todo_id, created_at, updated_at
        FROM vision_board_todos
        WHERE user_id = ? AND vision_board_id = ? AND deleted_at IS NULL
        ORDER BY sort_order ASC, id ASC`,
@@ -569,6 +613,10 @@ router.post("/:id/todos", async (req, res) => {
     const content = hasOwn(req.body, "content") ? String(req.body.content ?? "") : "";
     const titleInput = hasOwn(req.body, "title") ? req.body.title : undefined;
     const title = titleInput === undefined ? content : String(titleInput ?? "");
+    const imageUrl = normalizeImageUrlField(req.body);
+    if (imageUrl.invalidReason === "BASE64_NOT_ALLOWED") {
+      return rejectBase64Image(res);
+    }
     const tag = hasOwn(req.body, "tag") ? (req.body.tag ?? null) : null;
     const occurAt = toDateOrNull(req.body?.occur_at ?? req.body?.occurAt);
 
@@ -607,9 +655,9 @@ router.post("/:id/todos", async (req, res) => {
 
     const [result] = await connection.query(
       `INSERT INTO vision_board_todos
-       (user_id, vision_board_id, title, content, tag, occur_at, sort_order, linked_todo_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
-      [userId, boardId, title, content, tag, occurAt, nextOrder]
+       (user_id, vision_board_id, title, content, image_url, tag, occur_at, sort_order, linked_todo_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      [userId, boardId, title, content, imageUrl.value ?? null, tag, occurAt, nextOrder]
     );
 
     await connection.commit();
@@ -658,6 +706,14 @@ router.put("/:id/todos/:todoId", async (req, res) => {
     if (hasOwn(req.body, "content")) {
       setClauses.push("content = ?");
       values.push(req.body.content === null ? null : String(req.body.content ?? ""));
+    }
+    const imageUrl = normalizeImageUrlField(req.body);
+    if (imageUrl.invalidReason === "BASE64_NOT_ALLOWED") {
+      return rejectBase64Image(res);
+    }
+    if (imageUrl.provided) {
+      setClauses.push("image_url = ?");
+      values.push(imageUrl.value ?? null);
     }
     if (hasOwn(req.body, "tag")) {
       setClauses.push("tag = ?");

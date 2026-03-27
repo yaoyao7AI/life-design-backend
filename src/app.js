@@ -73,7 +73,34 @@ app.use(
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+
+const apiDiagnosticsEnabled =
+  ["1", "true", "yes", "on"].includes(
+    String(process.env.API_DIAGNOSTICS_LOG_ENABLED || "").trim().toLowerCase()
+  );
+
+if (apiDiagnosticsEnabled) {
+  app.use((req, res, next) => {
+    const reqId =
+      req.headers["x-request-id"] ||
+      `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    res.setHeader("X-Request-Id", reqId);
+    const startedAt = Date.now();
+
+    res.on("finish", () => {
+      if (!req.path.startsWith("/api")) return;
+      const elapsedMs = Date.now() - startedAt;
+      const contentType = res.getHeader("content-type") || null;
+      console.log(
+        `[API_DIAG] request_id=${reqId} method=${req.method} path=${req.originalUrl} status=${res.statusCode} content_type=${contentType} elapsed_ms=${elapsedMs}`
+      );
+    });
+
+    next();
+  });
+}
 
 // 静态文件服务 - 提供上传文件的访问
 const uploadsDir = path.join(__dirname, "../uploads");
@@ -93,6 +120,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/favorites", favoritesRouter);
 app.use("/api/vision", visionRouter);
 app.use("/api/upload", uploadRouter);
+app.use("/upload", uploadRouter);
 app.use("/api/todos", todosRouter);
 app.use("/api/plans/long-term", longTermPlansRouter);
 app.use("/admin", adminRouter);

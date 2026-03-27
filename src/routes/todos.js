@@ -39,6 +39,27 @@ function normalizeRequestId(v) {
   return s ? s : null;
 }
 
+function isBase64DataUrl(value) {
+  if (typeof value !== "string") return false;
+  return /^data:[^;]+;base64,/i.test(value.trim());
+}
+
+function containsBase64ImagePayload(input) {
+  if (!input) return false;
+  if (typeof input === "string") {
+    return isBase64DataUrl(input) && /^data:image\//i.test(input.trim());
+  }
+  if (Array.isArray(input)) {
+    return input.some((item) => containsBase64ImagePayload(item));
+  }
+  if (typeof input === "object") {
+    for (const value of Object.values(input)) {
+      if (containsBase64ImagePayload(value)) return true;
+    }
+  }
+  return false;
+}
+
 function rowToTodoItem(row) {
   return {
     id: row.id,
@@ -140,6 +161,11 @@ router.get("/", async (req, res) => {
 router.post("/", async (req, res) => {
   const userId = req.userId;
   const body = req.body || {};
+  if (containsBase64ImagePayload(body)) {
+    return res
+      .status(400)
+      .json({ error: "BASE64_NOT_ALLOWED", message: "检测到 base64 图片，请先上传后仅传 image_url" });
+  }
   const clientId = normalizeClientId(body.client_id ?? body.clientId);
   const requestId = normalizeRequestId(body.request_id ?? body.requestId);
   const todo = body.todo && typeof body.todo === "object" ? body.todo : body;

@@ -103,12 +103,35 @@ export async function ensureSyncSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `;
 
+  const createVisionBoardTodos = `
+    CREATE TABLE IF NOT EXISTS vision_board_todos (
+      id BIGINT PRIMARY KEY AUTO_INCREMENT,
+      user_id BIGINT NOT NULL,
+      vision_board_id BIGINT NOT NULL,
+      title VARCHAR(200) NULL,
+      content TEXT NULL,
+      image_url VARCHAR(1024) NULL,
+      tag VARCHAR(20) NULL,
+      occur_at DATETIME(3) NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      linked_todo_id VARCHAR(64) NULL,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      deleted_at DATETIME(3) NULL,
+      KEY idx_vbt_user_board (user_id, vision_board_id),
+      KEY idx_vbt_user_board_del_sort (user_id, vision_board_id, deleted_at, sort_order),
+      KEY idx_vbt_user_linked (user_id, linked_todo_id),
+      KEY idx_vbt_user_updated (user_id, updated_at, id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `;
+
   try {
     // 外键依赖顺序：todos -> todo_attachments；long_term_plans -> long_term_activities
     await pool.query(createTodos);
     await pool.query(createLongTermPlans);
     await pool.query(createTodoAttachments);
     await pool.query(createLongTermActivities);
+    await pool.query(createVisionBoardTodos);
 
     // 老库已建表但缺列时，补齐关键同步字段
     async function ensureColumn(table, column, columnDefSql) {
@@ -125,6 +148,7 @@ export async function ensureSyncSchema() {
     await ensureColumn("todos", "last_request_id", "last_request_id VARCHAR(64) NULL");
     await ensureColumn("long_term_plans", "payload", "payload JSON NULL");
     await ensureColumn("long_term_plans", "last_request_id", "last_request_id VARCHAR(64) NULL");
+    await ensureColumn("vision_board_todos", "image_url", "image_url VARCHAR(1024) NULL AFTER content");
 
     log("✅ 同步表已就绪");
   } catch (err) {

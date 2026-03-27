@@ -91,3 +91,26 @@ CREATE TABLE IF NOT EXISTS long_term_activities (
       ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ======================================
+-- 12. 愿景板待办 vision_board_todos
+-- ======================================
+CREATE TABLE IF NOT EXISTS vision_board_todos (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  vision_board_id BIGINT NOT NULL,
+  title VARCHAR(200) NULL,
+  content TEXT NULL,
+  image_url VARCHAR(1024) NULL,
+  tag VARCHAR(20) NULL,
+  occur_at DATETIME(3) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  linked_todo_id VARCHAR(64) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  deleted_at DATETIME(3) NULL,
+  KEY idx_vbt_user_board (user_id, vision_board_id),
+  KEY idx_vbt_user_board_del_sort (user_id, vision_board_id, deleted_at, sort_order),
+  KEY idx_vbt_user_linked (user_id, linked_todo_id),
+  KEY idx_vbt_user_updated (user_id, updated_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+

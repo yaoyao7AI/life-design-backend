@@ -140,12 +140,7 @@ router.post(
       const relativePath = req.file.path.replace(uploadsDir + path.sep, "").replace(/\\/g, "/");
       const publicUrl = resolvePublicUploadUrl(relativePath, req);
 
-      res.json({
-        success: true,
-        url: publicUrl,
-        fileUrl: publicUrl,
-        publicUrl: publicUrl
-      });
+      res.json({ url: publicUrl });
     } catch (error) {
       console.error("[文件上传错误]", error);
       
