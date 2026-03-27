@@ -16,3 +16,8 @@ npm-debug.log*
 
 # 部署产物（可选）
 deploy.tar.gz
+
+# 本地误产物（发布前清理，避免再次出现）
+life-design-backend/
+life-design-backend@1.0.0
+nodemon

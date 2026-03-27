@@ -1,3 +1,5 @@
+import { normalizeUploadsUrl } from "../utils/publicUploadUrl.js";
+
 function hasOwn(obj, key) {
   return Object.prototype.hasOwnProperty.call(obj, key);
 }
@@ -22,10 +24,13 @@ function toOptionalInt(value) {
 function normalizeElementForPersistence(element) {
   const raw = element && typeof element === "object" ? element : {};
   const type = typeof raw.type === "string" && raw.type ? raw.type : "text";
+  const rawContent = hasOwn(raw, "content") ? raw.content : null;
+  const normalizedContent =
+    type === "image" ? normalizeUploadsUrl(rawContent) : rawContent;
 
   return {
     type,
-    content: hasOwn(raw, "content") ? raw.content : null,
+    content: normalizedContent,
     x: toNumberWithDefault(raw.x, 0),
     y: toNumberWithDefault(raw.y, 0),
     width: toOptionalNumber(raw.width),
