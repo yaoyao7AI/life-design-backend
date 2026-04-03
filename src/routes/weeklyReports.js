@@ -243,7 +243,7 @@ router.get("/history", async (req, res) => {
  * 获取指定周报详情
  * GET /api/weekly-reports/:id
  */
-router.get("/:id(\\d+)", async (req, res) => {
+router.get("/:id", async (req, res) => {
   try {
     await ensureWeeklyReportsSchema();
     const userId = req.userId;
