@@ -179,8 +179,11 @@ MVP 最低标准：**LWW（最后写入获胜）**
 
 #### 3.B.2 创建（幂等 upsert）
 `POST /api/todos`
-- Body：完整 Todo（允许客户端传 `id`）
+- Body：完整 Todo（允许客户端传 `id`）；支持 `body.todo` 嵌套或扁平与 `body` 同源字段
 - 行为建议：若 `(user_id,id)` 已存在则按 upsert（返回 200 + 最新记录），否则创建（201）
+- **响应 `todo`**：与 `GET /api/todos` 的**单条 item 结构一致**（含 `completed`、`attachments`、`rev`、`updated_at` 等），为**写入后再次 SELECT 数据库**的结果（无应用层列表缓存）
+- **完成态写入**：服务端解析顺序为 **`completed` > `done` > `status`**（`status` 支持如 `done` / `pending` 等字符串），落库字段仍为 `todos.completed`
+- **日志与追踪**：**`X-Request-Id` 在进入 `/api/todos` 路由时即设置**（中间件在鉴权**之前**，故 **401 响应也带该头**）。优先透传请求头，缺省则服务端生成 UUID，并写回响应头。**`[TODO_UPSERT_VERIFY]`**、**`[TODO_LIST]`**（`TODO_API_LOG=1`）、**`[TODO_DELETE]`**（删除各终态）的 JSON 内均含 **`request_id`**。若要把「POST 写入 → 随后 GET 拉取」串成一条业务链路，**建议前端在 GET 上携带与 POST 相同的 `X-Request-Id`**（或沿用 POST 响应头中的值）。
 
 #### 3.B.3 更新（支持 patch + 并发控制可选）
 `PUT /api/todos/:id`
@@ -190,6 +193,22 @@ MVP 最低标准：**LWW（最后写入获胜）**
 #### 3.B.4 删除（软删除）
 `DELETE /api/todos/:id`
 - 写 `deleted_at=now()`，并更新 `updated_at`（让增量同步可见）
+
+#### 3.B.5 前端拉取解析约定（`cloudSyncPull` / `normalizeRemoteTodo`，已与后端当前实现对齐）
+
+**后端事实**（`GET /api/todos`）：响应体为 `{ server_time, next_since, items }`；**每条 todo 的 `completed`、`attachments`、`due_at` 等均在 item **顶层**，无统一 `payload` 包装。
+
+**前端解析策略**（实现于前端 `cloudSyncPull.ts`，并有单测覆盖）：
+
+| 概念 | 规则 |
+|------|------|
+| 嵌套层 | 仅当存在 **`payload` 或 `data` 且为对象** 时视为嵌套；否则用**整段远程对象 `r`**（与「无嵌套」的老逻辑等价）。 |
+| `completed` | 若根对象上已有 **`completed` / `done` / `status`** 等任一完成态提示，**以根为准**；否则再读嵌套。与后端「顶层 `completed`」一致；根上 `done`/`status` 为**防御性兼容**（列表接口当前保证的是 `completed`）。 |
+| `attachments` | 根上存在 **`attachments` 数组（含空数组 `[]`）** 则用根；否则再用 `payload.attachments`。 |
+| 其它 | `dueAt`、`createdAt`、`completedAt`、`note`、`source`、`visionBoardId`：**根优先**，再回落到 `payload`。 |
+| 愿景板展示名 | 根与 `payload` 均支持；并兼容可选键名 **`vision_board_name`、`board_name`**（与现有 `visionBoardTitle` 并列），便于后端将来在 `GET /api/todos` 顶层补字段而无需再改前端。 |
+
+**写入提醒**：落库列仍为 **`todos.completed`（布尔）**；`POST /api/todos` 已支持请求体用 **`completed` / `done` / `status`** 解析为完成态（与前端拉取时的根字段优先级对齐）。推送时仍建议显式传 `completed`。
 
 ---
 

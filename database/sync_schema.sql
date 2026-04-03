@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS todos (
   client_id VARCHAR(64) NULL,
   last_request_id VARCHAR(64) NULL,
   rev INT NOT NULL DEFAULT 1,
+  source VARCHAR(32) NULL,
+  vision_id BIGINT UNSIGNED NULL,
   PRIMARY KEY (user_id, id),
   KEY idx_todos_user_updated (user_id, updated_at, id),
   KEY idx_todos_user_deleted (user_id, deleted_at)

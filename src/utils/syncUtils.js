@@ -58,6 +58,31 @@ export function makeCursor(updatedAtDate, id) {
   return `${ms}:${id || ""}`;
 }
 
+function hasOwn(obj, key) {
+  return obj != null && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+/**
+ * POST /api/todos 完成态解析：completed > done > status
+ * （避免仅传 status: 'done' 时写库恒为未完成）
+ */
+export function parseCompletedFromTodo(todo) {
+  if (!todo || typeof todo !== "object") return false;
+  if (hasOwn(todo, "completed")) return parseBool(todo.completed, false);
+  if (hasOwn(todo, "done")) return parseBool(todo.done, false);
+  if (hasOwn(todo, "status")) {
+    const s = String(todo.status).toLowerCase().trim();
+    if (["done", "completed", "true", "1", "yes"].includes(s)) return true;
+    if (
+      ["pending", "todo", "open", "false", "0", "no", "incomplete", "unfinished"].includes(s)
+    ) {
+      return false;
+    }
+    return parseBool(todo.status, false);
+  }
+  return false;
+}
+
 export function normalizeTodoTag(tag) {
   if (tag === undefined || tag === null || tag === "") return null;
   const t = String(tag).trim();

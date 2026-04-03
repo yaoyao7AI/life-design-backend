@@ -7,7 +7,10 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "node --test ./test/vision-elements-consistency.test.js ./test/publicUploadUrl.test.js ./test/visionTodoUtils.test.js ./test/vision-image-ratio.test.js"
+    "test": "node --test ./test/vision-elements-consistency.test.js ./test/publicUploadUrl.test.js ./test/visionTodoUtils.test.js ./test/vision-image-ratio.test.js ./test/parseCompletedFromTodo.test.js",
+    "backfill:vision-todos": "node database/backfill-vision-todos-to-todos.js",
+    "backfill:vision-todos:verify": "node database/verify-vision-todos-backfill.js",
+    "verify:vision:api-consistency": "node scripts/verify-vision-api-consistency.js"
   },
   "keywords": [],
   "author": "",

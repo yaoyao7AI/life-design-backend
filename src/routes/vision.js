@@ -7,6 +7,13 @@ import {
 } from "./vision-element-normalizers.js";
 import { normalizeUploadsUrl } from "../utils/publicUploadUrl.js";
 import { monthRangeFromVisionRequest, toDateOrNull } from "../utils/visionTodoUtils.js";
+import {
+  bumpUnifiedTodoOrderTouch,
+  ensureTodosVisionColumns,
+  parseVisionBoardTodoIdFromUnifiedId,
+  softDeleteUnifiedTodoForVisionBoardTodo,
+  upsertUnifiedTodoFromVisionRow
+} from "../utils/visionUnifiedTodoSync.js";
 
 const router = Router();
 
@@ -150,6 +157,7 @@ async function ensureVisionBoardTodoSchema() {
           "ALTER TABLE vision_board_todos ADD COLUMN image_url VARCHAR(1024) NULL AFTER content"
         );
       }
+      await ensureTodosVisionColumns(pool);
     })().catch((err) => {
       visionBoardTodoSchemaEnsuredPromise = null;
       throw err;
@@ -160,19 +168,34 @@ async function ensureVisionBoardTodoSchema() {
 }
 
 function formatVisionTodo(row) {
+  const unifiedId = row.unified_todo_id != null ? String(row.unified_todo_id) : null;
+  const parsedLegacyId = parseVisionBoardTodoIdFromUnifiedId(unifiedId);
+  const legacyId = Number.isFinite(parsedLegacyId) ? parsedLegacyId : null;
+  const occurAt = row.occur_at ?? row.due_at ?? null;
   return {
-    id: row.id,
-    vision_board_id: row.vision_board_id,
-    title: row.title,
+    id: unifiedId,
+    legacy_id: legacyId,
+    vision_board_id: row.vision_board_id ?? row.vision_id ?? null,
+    title: row.title ?? row.content ?? "",
     content: row.content,
     image_url: row.image_url ?? null,
     tag: row.tag,
-    occur_at: row.occur_at ? new Date(row.occur_at).toISOString() : null,
-    sort_order: row.sort_order,
-    linked_todo_id: row.linked_todo_id,
+    occur_at: occurAt ? new Date(occurAt).toISOString() : null,
+    sort_order: row.sort_order ?? 0,
+    linked_todo_id: row.linked_todo_id ?? null,
+    vision_name: row.vision_name ?? null,
     created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
     updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : null,
   };
+}
+
+function parseVisionTodoIdInput(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const fromUnified = parseVisionBoardTodoIdFromUnifiedId(raw);
+  if (Number.isFinite(fromUnified)) return fromUnified;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return null;
 }
 
 function formatBoard(board) {
@@ -553,20 +576,50 @@ router.get("/:id/todos", async (req, res) => {
     }
 
     const [rows] = await connection.query(
-      `SELECT id, vision_board_id, title, content, image_url, tag, occur_at, sort_order, linked_todo_id, created_at, updated_at
-       FROM vision_board_todos
-       WHERE user_id = ? AND vision_board_id = ? AND deleted_at IS NULL
-       ORDER BY sort_order ASC, id ASC`,
+      `SELECT NULL AS id,
+              t.id AS unified_todo_id,
+              t.vision_id,
+              t.content,
+              t.tag,
+              t.due_at,
+              t.vision_id AS vision_board_id,
+              t.content AS title,
+              NULL AS image_url,
+              t.due_at AS occur_at,
+              0 AS sort_order,
+              NULL AS linked_todo_id,
+              t.created_at AS created_at,
+              t.updated_at AS updated_at,
+              vb.name AS vision_name
+       FROM todos t
+       LEFT JOIN vision_boards vb
+         ON vb.id = t.vision_id
+        AND vb.user_id = t.user_id
+       WHERE t.user_id = ?
+         AND t.source = 'vision'
+         AND t.vision_id = ?
+         AND t.deleted_at IS NULL
+       ORDER BY t.updated_at ASC, t.id ASC`,
       [userId, boardId]
     );
 
     if (rows.length === 0) {
-      await connection.query(
+      const [insertDefault] = await connection.query(
         `INSERT INTO vision_board_todos
          (user_id, vision_board_id, title, content, image_url, tag, occur_at, sort_order, linked_todo_id)
          VALUES (?, ?, '', '', NULL, NULL, NULL, 1000, NULL)`,
         [userId, boardId]
       );
+      const [defaultRows] = await connection.query(
+        `SELECT id, vision_board_id, title, content, tag, occur_at, created_at, updated_at
+         FROM vision_board_todos
+         WHERE id = ? AND user_id = ?
+         LIMIT 1`,
+        [insertDefault.insertId, userId]
+      );
+      if (defaultRows[0]) {
+        await upsertUnifiedTodoFromVisionRow(connection, userId, defaultRows[0]);
+      }
     }
 
     await connection.commit();
@@ -574,10 +627,30 @@ router.get("/:id/todos", async (req, res) => {
     connection = null;
 
     const [afterRows] = await pool.query(
-      `SELECT id, vision_board_id, title, content, image_url, tag, occur_at, sort_order, linked_todo_id, created_at, updated_at
-       FROM vision_board_todos
-       WHERE user_id = ? AND vision_board_id = ? AND deleted_at IS NULL
-       ORDER BY sort_order ASC, id ASC`,
+      `SELECT NULL AS id,
+              t.id AS unified_todo_id,
+              t.vision_id,
+              t.content,
+              t.tag,
+              t.due_at,
+              t.vision_id AS vision_board_id,
+              t.content AS title,
+              NULL AS image_url,
+              t.due_at AS occur_at,
+              0 AS sort_order,
+              NULL AS linked_todo_id,
+              t.created_at AS created_at,
+              t.updated_at AS updated_at,
+              vb.name AS vision_name
+       FROM todos t
+       LEFT JOIN vision_boards vb
+         ON vb.id = t.vision_id
+        AND vb.user_id = t.user_id
+       WHERE t.user_id = ?
+         AND t.source = 'vision'
+         AND t.vision_id = ?
+         AND t.deleted_at IS NULL
+       ORDER BY t.updated_at ASC, t.id ASC`,
       [userId, boardId]
     );
 
@@ -660,13 +733,24 @@ router.post("/:id/todos", async (req, res) => {
       [userId, boardId, title, content, imageUrl.value ?? null, tag, occurAt, nextOrder]
     );
 
+    const [insertedVbt] = await connection.query(
+      `SELECT id, vision_board_id, title, content, tag, occur_at, created_at, updated_at
+       FROM vision_board_todos
+       WHERE id = ? AND user_id = ?
+       LIMIT 1`,
+      [result.insertId, userId]
+    );
+    if (insertedVbt[0]) {
+      await upsertUnifiedTodoFromVisionRow(connection, userId, insertedVbt[0]);
+    }
+
     await connection.commit();
     connection.release();
     connection = null;
 
     return res.json({
       success: true,
-      data: { id: result.insertId, sort_order: nextOrder },
+      data: { id: `vbt_${result.insertId}`, legacy_id: result.insertId, sort_order: nextOrder },
     });
   } catch (err) {
     try {
@@ -690,6 +774,10 @@ router.put("/:id/todos/:todoId", async (req, res) => {
     await ensureVisionBoardTodoSchema();
     const userId = req.userId;
     const { id: boardId, todoId } = req.params;
+    const legacyTodoId = parseVisionTodoIdInput(todoId);
+    if (!Number.isFinite(legacyTodoId)) {
+      return res.status(400).json({ error: "VISION_TODO_ID_INVALID" });
+    }
     const monthRange = monthRangeFromVisionRequest(req);
     const linkedTodoId =
       hasOwn(req.body, "linked_todo_id") || hasOwn(req.body, "linkedTodoId")
@@ -737,7 +825,7 @@ router.put("/:id/todos/:todoId", async (req, res) => {
        WHERE id = ? AND user_id = ? AND vision_board_id = ? AND deleted_at IS NULL
        LIMIT 1
        FOR UPDATE`,
-      [todoId, userId, boardId]
+      [legacyTodoId, userId, boardId]
     );
     if (todoRows.length === 0) {
       await connection.rollback();
@@ -774,13 +862,24 @@ router.put("/:id/todos/:todoId", async (req, res) => {
       return res.status(400).json({ error: "VALIDATION_ERROR", message: "没有可更新字段" });
     }
 
-    values.push(todoId, userId, boardId);
+    values.push(legacyTodoId, userId, boardId);
     await connection.query(
       `UPDATE vision_board_todos
        SET ${setClauses.join(", ")}
        WHERE id = ? AND user_id = ? AND vision_board_id = ? AND deleted_at IS NULL`,
       values
     );
+
+    const [updatedVbt] = await connection.query(
+      `SELECT id, vision_board_id, title, content, tag, occur_at, created_at, updated_at
+       FROM vision_board_todos
+       WHERE id = ? AND user_id = ? AND vision_board_id = ? AND deleted_at IS NULL
+       LIMIT 1`,
+      [legacyTodoId, userId, boardId]
+    );
+    if (updatedVbt[0]) {
+      await upsertUnifiedTodoFromVisionRow(connection, userId, updatedVbt[0]);
+    }
 
     await connection.commit();
     connection.release();
@@ -808,6 +907,10 @@ router.delete("/:id/todos/:todoId", async (req, res) => {
     await ensureVisionBoardTodoSchema();
     const userId = req.userId;
     const { id: boardId, todoId } = req.params;
+    const legacyTodoId = parseVisionTodoIdInput(todoId);
+    if (!Number.isFinite(legacyTodoId)) {
+      return res.status(400).json({ error: "VISION_TODO_ID_INVALID" });
+    }
 
     connection = await pool.getConnection();
     await connection.beginTransaction();
@@ -818,7 +921,7 @@ router.delete("/:id/todos/:todoId", async (req, res) => {
        WHERE id = ? AND user_id = ? AND vision_board_id = ? AND deleted_at IS NULL
        LIMIT 1
        FOR UPDATE`,
-      [todoId, userId, boardId]
+      [legacyTodoId, userId, boardId]
     );
     if (todoRows.length === 0) {
       await connection.rollback();
@@ -837,12 +940,15 @@ router.delete("/:id/todos/:todoId", async (req, res) => {
       return res.status(400).json({ error: "VISION_TODO_MIN_ONE_REQUIRED" });
     }
 
+    const delAt = new Date();
     await connection.query(
       `UPDATE vision_board_todos
-       SET deleted_at = NOW(3)
+       SET deleted_at = ?
        WHERE id = ? AND user_id = ? AND vision_board_id = ? AND deleted_at IS NULL`,
-      [todoId, userId, boardId]
+      [delAt, legacyTodoId, userId, boardId]
     );
+
+    await softDeleteUnifiedTodoForVisionBoardTodo(connection, userId, legacyTodoId, delAt);
 
     await connection.commit();
     connection.release();
@@ -878,7 +984,7 @@ router.patch("/:id/todos/reorder", async (req, res) => {
     const ids = [];
     const sortMap = new Map();
     for (const item of orders) {
-      const id = Number(item?.id);
+      const id = parseVisionTodoIdInput(item?.id);
       const sortOrder = Number(item?.sort_order);
       if (!Number.isInteger(id) || !Number.isInteger(sortOrder)) {
         return res.status(400).json({ error: "VISION_TODO_INVALID_REORDER_PAYLOAD" });
@@ -908,6 +1014,10 @@ router.patch("/:id/todos/reorder", async (req, res) => {
          WHERE id = ? AND user_id = ? AND vision_board_id = ? AND deleted_at IS NULL`,
         [sortMap.get(id), id, userId, boardId]
       );
+    }
+
+    for (const id of ids) {
+      await bumpUnifiedTodoOrderTouch(connection, userId, id);
     }
 
     await connection.commit();

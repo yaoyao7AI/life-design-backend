@@ -34,6 +34,8 @@ export async function ensureSyncSchema() {
       client_id VARCHAR(64) NULL,
       last_request_id VARCHAR(64) NULL,
       rev INT NOT NULL DEFAULT 1,
+      source VARCHAR(32) NULL,
+      vision_id BIGINT UNSIGNED NULL,
       PRIMARY KEY (user_id, id),
       KEY idx_todos_user_updated (user_id, updated_at, id),
       KEY idx_todos_user_deleted (user_id, deleted_at)
@@ -103,6 +105,23 @@ export async function ensureSyncSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `;
 
+  const createWeeklyReports = `
+    CREATE TABLE IF NOT EXISTS weekly_reports (
+      id BIGINT PRIMARY KEY AUTO_INCREMENT,
+      user_id BIGINT NOT NULL,
+      week_start DATE NOT NULL,
+      week_end DATE NOT NULL,
+      status ENUM('pending','generating','completed','failed') NOT NULL DEFAULT 'pending',
+      report_data JSON NULL,
+      error_message VARCHAR(500) NULL,
+      created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      UNIQUE KEY uk_wr_user_week (user_id, week_start),
+      KEY idx_wr_user_status (user_id, status),
+      KEY idx_wr_user_updated (user_id, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `;
+
   const createVisionBoardTodos = `
     CREATE TABLE IF NOT EXISTS vision_board_todos (
       id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -132,6 +151,7 @@ export async function ensureSyncSchema() {
     await pool.query(createTodoAttachments);
     await pool.query(createLongTermActivities);
     await pool.query(createVisionBoardTodos);
+    await pool.query(createWeeklyReports);
 
     // 老库已建表但缺列时，补齐关键同步字段
     async function ensureColumn(table, column, columnDefSql) {
@@ -146,6 +166,8 @@ export async function ensureSyncSchema() {
     }
 
     await ensureColumn("todos", "last_request_id", "last_request_id VARCHAR(64) NULL");
+    await ensureColumn("todos", "source", "source VARCHAR(32) NULL AFTER rev");
+    await ensureColumn("todos", "vision_id", "vision_id BIGINT UNSIGNED NULL AFTER source");
     await ensureColumn("long_term_plans", "payload", "payload JSON NULL");
     await ensureColumn("long_term_plans", "last_request_id", "last_request_id VARCHAR(64) NULL");
     await ensureColumn("vision_board_todos", "image_url", "image_url VARCHAR(1024) NULL AFTER content");

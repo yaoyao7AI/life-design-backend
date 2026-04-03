@@ -13,19 +13,19 @@
 
 ### 方法 1：使用 SCP 同步代码（推荐）
 
-#### 步骤 1：打包本地代码
+#### 步骤 1：打包本地代码（推荐不包含 .env）
 
 ```bash
 # 在本地 Mac 执行
 cd ~/Desktop/life-design-backend
 
-# 创建部署包（排除 node_modules）
+# 创建部署包（排除 node_modules，且不打包敏感 .env）
 tar -czf deploy.tar.gz \
   --exclude='node_modules' \
   --exclude='.git' \
   --exclude='uploads' \
   --exclude='*.log' \
-  src/ package.json package-lock.json .env database/
+  src/ package.json package-lock.json database/ .env.example
 ```
 
 #### 步骤 2：上传到服务器
@@ -52,6 +52,12 @@ tar -xzf deploy.tar.gz
 
 # 安装依赖
 npm install
+
+# 配置环境变量（只在服务器上维护 .env / 或使用系统环境变量）
+# 方式 A：在服务器创建 .env（推荐）
+# cp .env.example .env && vim .env
+#
+# 方式 B：用系统环境变量（按你的运维习惯）
 
 # 重启服务
 pm2 restart life-design-backend
@@ -95,10 +101,10 @@ scp -i ~/Desktop/ssh-keys/life-design-key.pem \
   src/utils/*.js \
   root@123.56.17.118:/root/apps/life-design-backend/src/utils/
 
-# 复制配置文件
+# 复制配置文件（建议只传 .env.example，在服务器上创建 .env）
 scp -i ~/Desktop/ssh-keys/life-design-key.pem \
   package.json \
-  .env \
+  .env.example \
   root@123.56.17.118:/root/apps/life-design-backend/
 ```
 
@@ -162,9 +168,9 @@ echo "✅ 部署完成！"
 
 ## ⚠️ 重要注意事项
 
-### 1. 环境变量配置
+### 1. 环境变量配置（服务器侧）
 
-确保服务器上的 `.env` 文件包含：
+确保服务器上的 `.env` 文件包含（可参考 `.env.example`）：
 
 ```env
 DB_HOST=rm-2zec076upfs3zd44l1o.mysql.rds.aliyuncs.com
@@ -182,7 +188,40 @@ ALIYUN_SMS_TEMPLATE=SMS_499120253
 
 PORT=3000
 NODE_ENV=production
+AUTH_DEBUG_CODE_ENABLED=0
+
+# 生产建议：收敛 CORS，仅允许你的前端域名（逗号分隔）
+# CORS_ORIGINS=https://life-design.me,https://www.life-design.me
+
+# 默认关闭自动建表（需要时再开启）
+# AUTO_MIGRATE_SYNC_SCHEMA=0
 ```
+
+### 1.5 发布前数据库 DDL 权限与补列检查（本次必须）
+
+本次 `vision_boards` 新增字段：`background_color VARCHAR(32)`。
+
+由于代码里有运行时自动补列逻辑（`ALTER TABLE`），如果线上数据库账号没有 DDL 权限，会导致字段补齐失败并只打告警日志。  
+建议发布前先手工检查并补齐，避免运行时不确定性。
+
+```sql
+-- 1) 查看当前登录账号（确认是发布用账号）
+SELECT CURRENT_USER();
+
+-- 2) 检查字段是否已存在
+SHOW COLUMNS FROM vision_boards LIKE 'background_color';
+
+-- 3) 若不存在则手工补齐（推荐在发布前执行）
+ALTER TABLE vision_boards
+  ADD COLUMN background_color VARCHAR(32) NULL AFTER thumbnail;
+
+-- 4) 再次确认
+SHOW COLUMNS FROM vision_boards LIKE 'background_color';
+```
+
+补充建议：
+- 生产环境保持 `AUTO_MIGRATE_SYNC_SCHEMA=0`（默认关闭），由发布流程显式执行 DDL。
+- 如果你必须依赖自动补列，请先确认发布账号具备 `ALTER` 权限。
 
 ### 2. PM2 配置
 
