@@ -94,12 +94,16 @@ function resolveWeekRange(body, query) {
 }
 
 /**
- * 兼容前端历史接口：POST /api/ai/weekly-life-report
+ * 兼容前端历史接口：
+ * - /api/ai/weekly-life-report
+ * - /api/weekly-life-report
+ * - /ai/weekly-life-report（反向代理剥离 /api 时）
+ *
  * 说明：
  * - 不依赖 DeepSeek，始终可走本地规则引擎，避免 503
  * - 返回兼容字段：ok + data + report_data
  */
-router.post("/weekly-life-report", async (req, res) => {
+async function handleWeeklyLifeReport(req, res) {
   try {
     res.setHeader("X-Weekly-Engine-Version", WEEKLY_ENGINE_VERSION);
     const userId = req.userId;
@@ -138,6 +142,14 @@ router.post("/weekly-life-report", async (req, res) => {
       engine_version: WEEKLY_ENGINE_VERSION
     });
   }
-});
+}
+
+// 主路径
+router.post("/weekly-life-report", handleWeeklyLifeReport);
+router.get("/weekly-life-report", handleWeeklyLifeReport);
+
+// 兼容路径：当路由挂载在 /api/weekly-life-report 或 /api/proxy/weekly-life-report 时可直接命中
+router.post("/", handleWeeklyLifeReport);
+router.get("/", handleWeeklyLifeReport);
 
 export default router;

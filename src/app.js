@@ -127,6 +127,10 @@ app.use("/api/todos", todosRouter);
 app.use("/api/plans/long-term", longTermPlansRouter);
 app.use("/api/weekly-reports", weeklyReportsRouter);
 app.use("/api/ai", aiRouter);
+// 兼容：部分网关会把 /api/ai/weekly-life-report 重写为 /api/weekly-life-report
+app.use("/api/weekly-life-report", aiRouter);
+// 兼容：部分反向代理会剥离 /api 前缀，直达 /ai/weekly-life-report
+app.use("/ai", aiRouter);
 app.use("/admin", adminRouter);
 
 // 代理路由支持（兼容前端 /api/proxy 路径）
@@ -140,6 +144,8 @@ app.use("/api/proxy/todos", todosRouter);
 app.use("/api/proxy/plans/long-term", longTermPlansRouter);
 app.use("/api/proxy/weekly-reports", weeklyReportsRouter);
 app.use("/api/proxy/ai", aiRouter);
+// 兼容：前端历史代理路径简化后可能落到 /api/proxy/weekly-life-report
+app.use("/api/proxy/weekly-life-report", aiRouter);
 
 // 404 处理 - 确保返回 JSON 格式
 app.use((req, res, next) => {
