@@ -13,6 +13,7 @@ import adminRouter from "./routes/admin.js";
 import todosRouter from "./routes/todos.js";
 import longTermPlansRouter from "./routes/longTermPlans.js";
 import weeklyReportsRouter from "./routes/weeklyReports.js";
+import aiRouter from "./routes/ai.js";
 
 const app = express();
 
@@ -125,6 +126,7 @@ app.use("/upload", uploadRouter);
 app.use("/api/todos", todosRouter);
 app.use("/api/plans/long-term", longTermPlansRouter);
 app.use("/api/weekly-reports", weeklyReportsRouter);
+app.use("/api/ai", aiRouter);
 app.use("/admin", adminRouter);
 
 // 代理路由支持（兼容前端 /api/proxy 路径）
@@ -137,6 +139,7 @@ app.use("/api/proxy/upload", uploadRouter);
 app.use("/api/proxy/todos", todosRouter);
 app.use("/api/proxy/plans/long-term", longTermPlansRouter);
 app.use("/api/proxy/weekly-reports", weeklyReportsRouter);
+app.use("/api/proxy/ai", aiRouter);
 
 // 404 处理 - 确保返回 JSON 格式
 app.use((req, res, next) => {
