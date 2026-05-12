@@ -32,6 +32,9 @@ export function ensureTodosVisionColumns(db) {
       }
       await addColumn("source", "source VARCHAR(32) NULL AFTER rev");
       await addColumn("vision_id", "vision_id BIGINT UNSIGNED NULL AFTER source");
+      await addColumn("vision_board_id", "vision_board_id VARCHAR(64) NULL AFTER vision_id");
+      await addColumn("energy_feedback", "energy_feedback VARCHAR(20) NULL AFTER ai_tags");
+      await addColumn("meaning_feedback", "meaning_feedback VARCHAR(20) NULL AFTER energy_feedback");
     })().catch((err) => {
       todosVisionColumnsPromise = null;
       throw err;

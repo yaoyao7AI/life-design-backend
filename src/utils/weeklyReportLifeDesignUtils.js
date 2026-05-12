@@ -31,6 +31,28 @@ function truncateText(text, maxLen = 80) {
   return `${s.slice(0, maxLen - 1)}…`;
 }
 
+const ENERGY_SCORE_MAP = { positive: 100, neutral: 60, negative: 20, null: 50 };
+const MEANING_SCORE_MAP = { high: 100, medium: 60, low: 20, null: 50 };
+const DRAIN_ENERGY_MAP = { negative: 100, neutral: 50, positive: 10, null: 40 };
+const DRAIN_MEANING_MAP = { low: 100, medium: 50, high: 10, null: 40 };
+
+function normalizeEnum(value) {
+  if (value === undefined || value === null || value === "") return null;
+  return String(value).trim().toLowerCase() || null;
+}
+
+function toVisionContext(todo) {
+  const description = String(todo.vision_description || "").trim();
+  const keywords = Array.isArray(todo.vision_keywords) ? todo.vision_keywords : [];
+  return {
+    vision_board_id: todo.vision_board_id ?? null,
+    vision_name: todo.vision_board_name ?? null,
+    vision_keywords: keywords,
+    vision_description: description || null,
+    cover_title: todo.vision_cover_title ?? todo.vision_board_name ?? null
+  };
+}
+
 function countKeywordMatches(text, keywords) {
   if (!text || !Array.isArray(keywords) || keywords.length === 0) return 0;
   let total = 0;
@@ -86,6 +108,9 @@ function normalizeTodos(rows) {
     if (!Number.isFinite(durationHours)) durationHours = 1;
     if (durationHours > 0 && durationHours > 24) durationHours = durationHours / 60;
     if (durationHours <= 0) durationHours = 1;
+    const energyFeedback = normalizeEnum(row.energy_feedback);
+    const meaningFeedback = normalizeEnum(row.meaning_feedback);
+    const hasVisionBoard = !!(row.vision_board_id && String(row.vision_board_id).trim());
     return {
       ...row,
       ai_tags_obj: aiTags,
@@ -94,7 +119,10 @@ function normalizeTodos(rows) {
       flow_state: aiTags?.flow_state === true,
       prototype_behavior: aiTags?.prototype_behavior === true,
       cognitive_tags: Array.isArray(aiTags?.cognitive_tags) ? aiTags.cognitive_tags : [],
-      duration_hours: round2(durationHours)
+      duration_hours: round2(durationHours),
+      energy_feedback_norm: energyFeedback,
+      meaning_feedback_norm: meaningFeedback,
+      has_vision_board: hasVisionBoard
     };
   });
 }
@@ -166,44 +194,49 @@ function buildBehaviorExtremes(todos) {
   const positive = [];
   const negative = [];
   for (const t of todos) {
-    const label = String(t.content || "").trim().slice(0, 40) || "(未命名行为)";
-    const delta =
-      Number.isFinite(t.energy_before) && Number.isFinite(t.energy_after)
-        ? Number(t.energy_after) - Number(t.energy_before)
-        : 0;
-    const flow = t.flow_state;
-    const engagement = Number(t.engagement_level || 0);
-    const energyAfter = Number.isFinite(Number(t.energy_after)) ? Number(t.energy_after) : 5;
-    const flowBonus = flow ? 3 : 0;
-    const vitalityScore = clampScore((engagement * 10 + energyAfter * 8 + flowBonus * 6) * 1.2);
-    if (delta > 0 || flow) {
-      positive.push({
-        behavior: label,
-        title: label,
-        life_dimension: t.life_dimension_norm,
-        energy_delta: delta,
-        flow_state: flow,
-        vitality_score: vitalityScore,
-        ai_explanation: delta > 0 ? "该事项完成后能量提升，属于高生命力行为。" : "该事项具备心流特征，建议持续投入。"
-      });
-    }
-    if (delta < 0 || engagement <= 2 || String(t.emotion_after || "").includes("负")) {
-      negative.push({
-        behavior: label,
-        title: label,
-        life_dimension: t.life_dimension_norm,
-        energy_delta: delta,
-        engagement_level: t.engagement_level ?? null,
-        drain_score: clampScore(60 + Math.max(0, -delta) * 12 + (engagement <= 2 ? 15 : 0)),
-        reason:
-          delta < 0
-            ? "完成后能量下降"
-            : engagement <= 2
-              ? "投入度偏低"
-              : "情绪反馈偏负面",
-        reducible: delta < -1 || engagement <= 2
-      });
-    }
+    const label = String(t.content || "").trim().slice(0, 80) || "(未命名行为)";
+    const energyKey = t.energy_feedback_norm || "null";
+    const meaningKey = t.meaning_feedback_norm || "null";
+    const hasVision = !!t.has_vision_board;
+    const vitalityScore = round1(
+      (ENERGY_SCORE_MAP[energyKey] ?? ENERGY_SCORE_MAP.null) * 0.4 +
+      (MEANING_SCORE_MAP[meaningKey] ?? MEANING_SCORE_MAP.null) * 0.35 +
+      (hasVision ? 100 : 50) * 0.25
+    );
+    const drainScore = round1(
+      (DRAIN_ENERGY_MAP[energyKey] ?? DRAIN_ENERGY_MAP.null) * 0.5 +
+      (DRAIN_MEANING_MAP[meaningKey] ?? DRAIN_MEANING_MAP.null) * 0.3 +
+      (hasVision ? 20 : 70) * 0.2
+    );
+
+    positive.push({
+      behavior: label,
+      title: label,
+      vitality_score: vitalityScore,
+      energy_feedback: t.energy_feedback_norm,
+      meaning_feedback: t.meaning_feedback_norm,
+      reflection_note: t.reflection_note ?? null,
+      ...toVisionContext(t),
+      ai_explanation:
+        vitalityScore >= 75
+          ? "该行为在能量、意义与愿景关联上表现较强。"
+          : "该行为具备一定生命力，可继续优化执行方式。"
+    });
+
+    negative.push({
+      behavior: label,
+      title: label,
+      drain_score: drainScore,
+      energy_feedback: t.energy_feedback_norm,
+      meaning_feedback: t.meaning_feedback_norm,
+      reflection_note: t.reflection_note ?? null,
+      ...toVisionContext(t),
+      reason:
+        drainScore >= 70
+          ? "反馈显示该行为存在明显消耗。"
+          : "该行为有一定消耗，建议调整任务设计。",
+      suggestion: hasVision ? "保留愿景目标，降低执行阻力。" : "先补上愿景关联，再做最小可行动作。"
+    });
   }
 
   positive.sort((a, b) => b.vitality_score - a.vitality_score);
@@ -437,27 +470,138 @@ function buildPrototypeExperiments(weakDimension) {
   return [base];
 }
 
+function buildVisionSummary(alignedCount, deviatedCount) {
+  if (alignedCount === 0 && deviatedCount === 0) {
+    return "本周暂无可用于愿景一致性分析的数据。";
+  }
+  if (alignedCount > 0 && deviatedCount === 0) {
+    return "本周你的完成事项与愿景保持一致，建议继续沿当前方向迭代小实验。";
+  }
+  if (alignedCount === 0 && deviatedCount > 0) {
+    return "本周完成事项与现有愿景连接较弱，建议下周先选一个愿景做最小行动。";
+  }
+  return `本周你已靠近 ${alignedCount} 个愿景，但仍有 ${deviatedCount} 个愿景缺少行动连接。`;
+}
+
+function buildVisionAlignment(visionBoards, todos) {
+  const completedCountByBoard = new Map();
+  for (const t of todos) {
+    const key = t.vision_board_id ? String(t.vision_board_id) : null;
+    if (!key) continue;
+    completedCountByBoard.set(key, (completedCountByBoard.get(key) || 0) + 1);
+  }
+
+  const aligned = [];
+  const deviated = [];
+  for (const board of visionBoards) {
+    const key = String(board.id);
+    const doneCount = completedCountByBoard.get(key) || 0;
+    const item = {
+      vision_board_id: key,
+      vision_name: board.name ?? null,
+      cover_title: board.name ?? null,
+      completed_count: doneCount
+    };
+    if (doneCount > 0) aligned.push(item);
+    else deviated.push(item);
+  }
+
+  return {
+    aligned_visions: aligned,
+    deviated_visions: deviated,
+    summary: buildVisionSummary(aligned.length, deviated.length)
+  };
+}
+
 export async function fetchWeekTodos(pool, userId, weekStart, weekEnd) {
   const [rows] = await pool.query(
-    `SELECT id, content, tag, due_at, completed, completed_at, created_at, updated_at, deleted_at,
-            emotion_before, emotion_after, energy_before, energy_after, is_active_choice,
-            engagement_level, completion_feeling, life_dimension, behavior_type, ai_tags, reflection_note
-     FROM todos
-     WHERE user_id = ?
-       AND deleted_at IS NULL
-       AND (
-         (completed_at >= ? AND completed_at < DATE_ADD(?, INTERVAL 1 DAY))
-         OR (updated_at >= ? AND updated_at < DATE_ADD(?, INTERVAL 1 DAY))
-       )
-     ORDER BY updated_at ASC, id ASC`,
-    [userId, weekStart, weekEnd, weekStart, weekEnd]
+    `SELECT t.id, t.content, t.tag, t.due_at, t.completed, t.completed_at, t.created_at, t.updated_at, t.deleted_at,
+            t.emotion_before, t.emotion_after, t.energy_before, t.energy_after, t.is_active_choice,
+            t.engagement_level, t.completion_feeling, t.life_dimension, t.behavior_type, t.ai_tags, t.reflection_note,
+            t.vision_board_id, t.energy_feedback, t.meaning_feedback,
+            vb.name AS vision_board_name, vb.thumbnail AS vision_cover_title
+     FROM todos t
+     LEFT JOIN vision_boards vb
+       ON vb.user_id = t.user_id
+      AND t.vision_board_id IS NOT NULL
+      AND t.vision_board_id <> ''
+      AND t.vision_board_id REGEXP '^[0-9]+$'
+      AND vb.id = CAST(t.vision_board_id AS UNSIGNED)
+     WHERE t.user_id = ?
+       AND t.deleted_at IS NULL
+       AND t.completed = 1
+       AND t.completed_at >= ?
+       AND t.completed_at < DATE_ADD(?, INTERVAL 1 DAY)
+     ORDER BY t.completed_at ASC, t.id ASC`,
+    [userId, weekStart, weekEnd]
   );
   return rows;
 }
 
+async function fetchVisionBoards(pool, userId) {
+  const [rows] = await pool.query(
+    `SELECT id, name, thumbnail
+     FROM vision_boards
+     WHERE user_id = ?`,
+    [userId]
+  );
+  return rows;
+}
+
+async function fetchVisionBoardTextMeta(pool, visionBoardIds) {
+  if (!visionBoardIds.length) return new Map();
+  const [rows] = await pool.query(
+    `SELECT board_id, content
+     FROM vision_elements
+     WHERE board_id IN (?)
+       AND type = 'text'
+       AND content IS NOT NULL
+       AND TRIM(content) <> ''`,
+    [visionBoardIds]
+  );
+  const grouped = new Map();
+  for (const row of rows) {
+    const key = String(row.board_id);
+    const arr = grouped.get(key) || [];
+    arr.push(String(row.content || "").trim());
+    grouped.set(key, arr);
+  }
+
+  const meta = new Map();
+  for (const [key, texts] of grouped.entries()) {
+    const compactTexts = texts.filter(Boolean).slice(0, 8);
+    const allWords = compactTexts
+      .join(" ")
+      .split(/[\s,，。！？!?:：；;、|/\\()\[\]{}"']+/)
+      .map((w) => w.trim())
+      .filter((w) => w.length >= 2)
+      .slice(0, 12);
+    meta.set(key, {
+      keywords: allWords,
+      description: compactTexts.join("；").slice(0, 400)
+    });
+  }
+  return meta;
+}
+
 export async function generateReportData(pool, userId, weekStart, weekEnd) {
-  const rawTodos = await fetchWeekTodos(pool, userId, weekStart, weekEnd);
-  const todos = normalizeTodos(rawTodos);
+  const [rawTodos, visionBoards] = await Promise.all([
+    fetchWeekTodos(pool, userId, weekStart, weekEnd),
+    fetchVisionBoards(pool, userId)
+  ]);
+  const boardIds = visionBoards.map((b) => Number(b.id)).filter((id) => Number.isFinite(id));
+  const boardTextMeta = await fetchVisionBoardTextMeta(pool, boardIds);
+  const rawTodosWithVision = rawTodos.map((todo) => {
+    const key = todo.vision_board_id ? String(todo.vision_board_id) : "";
+    const meta = key ? boardTextMeta.get(key) : null;
+    return {
+      ...todo,
+      vision_keywords: meta?.keywords || [],
+      vision_description: meta?.description || null,
+      vision_cover_title: todo.vision_cover_title || todo.vision_board_name || null
+    };
+  });
+  const todos = normalizeTodos(rawTodosWithVision);
 
   const dimensionScores = buildDimensionScores(todos);
   const energyScore = calcEnergyScore(todos);
@@ -466,6 +610,7 @@ export async function generateReportData(pool, userId, weekStart, weekEnd) {
   const extremes = buildBehaviorExtremes(todos);
   const secondaryCounts = countSecondaryDimensions(todos);
   const predicaments = detectPredicaments(todos, secondaryCounts);
+  const visionAlignment = buildVisionAlignment(visionBoards, todos);
 
   const scores = {
     ...dimensionScores,
@@ -473,12 +618,6 @@ export async function generateReportData(pool, userId, weekStart, weekEnd) {
     balance_score: balanceScore,
     coherence_score: coherenceScore
   };
-
-  const narrative = buildWeeklySummary(scores, secondaryCounts, predicaments);
-  const radarData = buildRadarData(todos, secondaryCounts);
-  const chartData = buildChartData(todos, dimensionScores.counts, secondaryCounts);
-  const quadrantDashboard = buildQuadrantDashboard(todos, scores);
-  const reframing = buildReframing(narrative.problem_type);
   const weakestDimension = [
     { key: "健康", score: scores.health_score },
     { key: "工作", score: scores.work_score },
@@ -486,18 +625,28 @@ export async function generateReportData(pool, userId, weekStart, weekEnd) {
     { key: "爱", score: scores.love_score }
   ].sort((a, b) => a.score - b.score)[0]?.key;
   const prototypeExperiments = buildPrototypeExperiments(weakestDimension);
+  const reframeSuggestion = buildReframing(
+    predicaments.energy_problem ? "能量问题" : "行动问题"
+  );
+  const mainInsight =
+    extremes.top_positive_behaviors[0]?.title
+      ? `本周最有生命力的行为是「${extremes.top_positive_behaviors[0].title}」，建议围绕它继续迭代人生原型。`
+      : "本周完成事项较少，建议先从一个与愿景直接相关的小行动开始。";
   const behaviorDetails = todos.map((t) => ({
     id: String(t.id),
     title: String(t.content || "").trim() || "(未命名事项)",
     completed: !!t.completed,
-    life_dimension: t.life_dimension_norm,
-    ai_tag: t.behavior_type_norm || null,
-    energy_change:
-      Number.isFinite(t.energy_before) && Number.isFinite(t.energy_after)
-        ? Number(t.energy_after) - Number(t.energy_before)
-        : null,
-    time_hours: t.duration_hours
+    energy_feedback: t.energy_feedback_norm,
+    meaning_feedback: t.meaning_feedback_norm,
+    reflection_note: t.reflection_note ?? null,
+    vision_board_id: t.vision_board_id ?? null,
+    vision_name: t.vision_board_name ?? null,
+    vision_keywords: t.vision_keywords || [],
+    vision_description: t.vision_description ?? null
   }));
+  const radarData = buildRadarData(todos, secondaryCounts);
+  const chartData = buildChartData(todos, dimensionScores.counts, secondaryCounts);
+  const quadrantDashboard = buildQuadrantDashboard(todos, scores);
 
   return {
     week_start: weekStart,
@@ -507,20 +656,20 @@ export async function generateReportData(pool, userId, weekStart, weekEnd) {
     todo_count: todos.length,
     ...scores,
     secondary_dimensions: secondaryCounts,
-    main_insight: narrative.main_insight,
-    main_problem: narrative.main_problem,
-    main_direction: narrative.main_direction,
+    main_insight: mainInsight,
+    vision_alignment: visionAlignment,
     quadrant_dashboard: quadrantDashboard,
     top_positive_behaviors: extremes.top_positive_behaviors,
     top_negative_behaviors: extremes.top_negative_behaviors,
     predicament_insights: predicaments,
-    problem_type: narrative.problem_type,
-    problem_summary: narrative.problem_summary,
-    reframing,
-    weekly_summary: narrative.weekly_summary,
-    weekly_insight: narrative.weekly_insight,
+    problem_type: predicaments.energy_problem ? "能量问题" : "行动问题",
+    problem_summary: visionAlignment.summary,
+    reframe_suggestion: reframeSuggestion,
+    reframing: reframeSuggestion,
+    weekly_summary: visionAlignment.summary,
+    weekly_insight: mainInsight,
     prototype_experiments: prototypeExperiments,
-    prototype_suggestions: narrative.prototype_suggestions,
+    prototype_suggestions: prototypeExperiments.map((it) => it.goal),
     radar_data: radarData,
     chart_data: chartData,
     time_distribution: {

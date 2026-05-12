@@ -7,7 +7,11 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "node --test ./test/vision-elements-consistency.test.js ./test/publicUploadUrl.test.js ./test/visionTodoUtils.test.js ./test/vision-image-ratio.test.js ./test/parseCompletedFromTodo.test.js",
+    "test": "node --test ./test/vision-elements-consistency.test.js ./test/publicUploadUrl.test.js ./test/visionTodoUtils.test.js ./test/vision-image-ratio.test.js ./test/parseCompletedFromTodo.test.js ./test/todoAttachmentUtils.test.js",
+    "migrate:life-design-v1": "node scripts/migrate-life-design-v1.js",
+    "smoke:weekly-report": "node scripts/smoke-weekly-report.js",
+    "e2e:weekly-report:p0": "node scripts/e2e-weekly-report-p0.js",
+    "mock:weekly-report:failed": "node scripts/mock-weekly-report-failed.js",
     "backfill:vision-todos": "node database/backfill-vision-todos-to-todos.js",
     "backfill:vision-todos:verify": "node database/verify-vision-todos-backfill.js",
     "verify:vision:api-consistency": "node scripts/verify-vision-api-consistency.js"

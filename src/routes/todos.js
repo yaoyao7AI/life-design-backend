@@ -16,6 +16,8 @@ import {
   parseVisionBoardTodoIdFromUnifiedId,
   softDeleteVisionBoardTodoFromUnified
 } from "../utils/visionUnifiedTodoSync.js";
+import { normalizeTodoAttachmentsInput } from "../utils/todoAttachmentUtils.js";
+import { analyzeTodoWithDeepSeek, deepseekEnabled } from "../utils/deepseekLifeDesign.js";
 
 const router = Router();
 
@@ -89,6 +91,48 @@ function normalizeRequestId(v) {
   return s ? s : null;
 }
 
+function parseNullableInt(input, { min = null, max = null } = {}) {
+  if (input === undefined || input === null || input === "") return null;
+  const n = Number(input);
+  if (!Number.isFinite(n)) return null;
+  const value = Math.floor(n);
+  if (min != null && value < min) return null;
+  if (max != null && value > max) return null;
+  return value;
+}
+
+function parseNullableBool(input) {
+  if (input === undefined || input === null || input === "") return null;
+  return parseBool(input, false);
+}
+
+function normalizeShortText(input, max = 64) {
+  if (input === undefined || input === null) return null;
+  const s = String(input).trim();
+  if (!s) return null;
+  return s.slice(0, max);
+}
+
+function normalizeReflectionText(input) {
+  if (input === undefined || input === null) return null;
+  const s = String(input).trim();
+  return s ? s.slice(0, 4000) : null;
+}
+
+function parseAiTagsInput(input) {
+  if (input === undefined || input === null || input === "") return null;
+  if (typeof input === "object") return input;
+  if (typeof input === "string") {
+    try {
+      const parsed = JSON.parse(input);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 function pickVisionIdForTodo(todo) {
   if (todo == null || typeof todo !== "object") return null;
   const raw =
@@ -99,6 +143,37 @@ function pickVisionIdForTodo(todo) {
   if (raw === null || raw === "") return null;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+function pickVisionBoardIdForTodo(todo) {
+  if (todo == null || typeof todo !== "object") return null;
+  const hasField =
+    Object.prototype.hasOwnProperty.call(todo, "vision_board_id") ||
+    Object.prototype.hasOwnProperty.call(todo, "visionBoardId");
+  if (!hasField) return undefined;
+  const raw = todo.vision_board_id ?? todo.visionBoardId;
+  if (raw === undefined) return undefined;
+  if (raw === null || raw === "") return null;
+  const s = String(raw).trim();
+  return s ? s.slice(0, 64) : null;
+}
+
+function normalizeEnergyFeedback(input) {
+  if (input === undefined) return undefined;
+  if (input === null || input === "") return null;
+  const v = String(input).trim().toLowerCase();
+  if (!v) return null;
+  if (!["positive", "neutral", "negative"].includes(v)) return "__invalid__";
+  return v;
+}
+
+function normalizeMeaningFeedback(input) {
+  if (input === undefined) return undefined;
+  if (input === null || input === "") return null;
+  const v = String(input).trim().toLowerCase();
+  if (!v) return null;
+  if (!["high", "medium", "low"].includes(v)) return "__invalid__";
+  return v;
 }
 
 function pickSourceValForInsert(todo) {
@@ -130,6 +205,80 @@ function containsBase64ImagePayload(input) {
   return false;
 }
 
+async function replaceTodoAttachments(db, userId, todoId, attachments, now) {
+  const [existingRows] = await db.query(
+    `
+      SELECT id
+      FROM todo_attachments
+      WHERE user_id = ? AND todo_id = ?
+      FOR UPDATE
+    `,
+    [userId, todoId]
+  );
+
+  const existingIds = new Set(existingRows.map((row) => String(row.id)));
+  const keepIds = new Set();
+
+  for (const attachment of attachments) {
+    const attachmentId =
+      attachment.id && existingIds.has(String(attachment.id))
+        ? String(attachment.id)
+        : `att_${randomUUID()}`;
+    keepIds.add(attachmentId);
+
+    if (existingIds.has(attachmentId)) {
+      await db.query(
+        `
+          UPDATE todo_attachments
+          SET type = ?,
+              url = ?,
+              file_name = ?,
+              updated_at = ?,
+              deleted_at = NULL,
+              rev = rev + 1
+          WHERE user_id = ? AND id = ?
+        `,
+        [attachment.type, attachment.url, attachment.file_name, now, userId, attachmentId]
+      );
+      continue;
+    }
+
+    await db.query(
+      `
+        INSERT INTO todo_attachments
+          (user_id, id, todo_id, type, url, file_name, created_at, updated_at, deleted_at, client_id, rev)
+        VALUES
+          (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1)
+      `,
+      [userId, attachmentId, todoId, attachment.type, attachment.url, attachment.file_name, now, now]
+    );
+  }
+
+  for (const row of existingRows) {
+    const existingId = String(row.id);
+    if (keepIds.has(existingId)) continue;
+    await db.query(
+      `
+        UPDATE todo_attachments
+        SET deleted_at = ?,
+            updated_at = ?,
+            rev = rev + 1
+        WHERE user_id = ? AND id = ?
+      `,
+      [now, now, userId, existingId]
+    );
+  }
+}
+
+async function validateVisionBoardOwnership(db, userId, visionBoardId) {
+  if (visionBoardId == null) return true;
+  const [rows] = await db.query(
+    "SELECT 1 FROM vision_boards WHERE id = ? AND user_id = ? LIMIT 1",
+    [visionBoardId, userId]
+  );
+  return rows.length > 0;
+}
+
 function rowToTodoItem(row) {
   return {
     id: row.id,
@@ -143,8 +292,30 @@ function rowToTodoItem(row) {
     deleted_at: toIso(row.deleted_at),
     source: row.source ?? null,
     vision_id: row.vision_id != null ? Number(row.vision_id) : null,
-    vision_name:
-      row.source === "vision" ? (row.vision_name != null ? String(row.vision_name) : null) : null,
+    emotion_before: row.emotion_before ?? null,
+    emotion_after: row.emotion_after ?? null,
+    energy_before: row.energy_before != null ? Number(row.energy_before) : null,
+    energy_after: row.energy_after != null ? Number(row.energy_after) : null,
+    is_active_choice: row.is_active_choice == null ? null : !!row.is_active_choice,
+    engagement_level: row.engagement_level != null ? Number(row.engagement_level) : null,
+    completion_feeling: row.completion_feeling ?? null,
+    life_dimension: row.life_dimension ?? null,
+    behavior_type: row.behavior_type ?? null,
+    ai_tags:
+      row.ai_tags && typeof row.ai_tags === "string"
+        ? (() => {
+            try {
+              return JSON.parse(row.ai_tags);
+            } catch {
+              return null;
+            }
+          })()
+        : row.ai_tags ?? null,
+    reflection_note: row.reflection_note ?? null,
+    vision_board_id: row.vision_board_id ?? null,
+    energy_feedback: row.energy_feedback ?? null,
+    meaning_feedback: row.meaning_feedback ?? null,
+    vision_name: row.vision_name != null ? String(row.vision_name) : null,
     attachments: []
   };
 }
@@ -177,6 +348,7 @@ async function attachAttachments(db, userId, todos, includeDeleted) {
       type: r.type,
       url: r.url,
       file_name: r.file_name ?? null,
+      fileName: r.file_name ?? null,
       updated_at: toIso(r.updated_at),
       deleted_at: toIso(r.deleted_at)
     });
@@ -189,14 +361,25 @@ async function loadTodoItemForResponse(db, userId, id, includeDeletedAttachments
     `
       SELECT t.user_id, t.id, t.content, t.tag, t.due_at, t.completed, t.completed_at,
              t.updated_at, t.deleted_at, t.client_id, t.rev, t.source, t.vision_id,
+             t.emotion_before, t.emotion_after, t.energy_before, t.energy_after,
+             t.is_active_choice, t.engagement_level, t.completion_feeling, t.life_dimension,
+             t.behavior_type, t.ai_tags, t.reflection_note, t.vision_board_id,
+             t.energy_feedback, t.meaning_feedback,
              CASE
-               WHEN t.source = 'vision' THEN vb.name
+               WHEN t.source = 'vision' OR t.vision_board_id IS NOT NULL THEN vb.name
                ELSE NULL
              END AS vision_name
       FROM todos t
       LEFT JOIN vision_boards vb
-        ON vb.id = t.vision_id
-       AND vb.user_id = t.user_id
+        ON vb.user_id = t.user_id
+       AND (
+         (t.vision_id IS NOT NULL AND vb.id = t.vision_id)
+         OR (
+           t.vision_board_id IS NOT NULL
+           AND t.vision_board_id REGEXP '^[0-9]+$'
+           AND vb.id = CAST(t.vision_board_id AS UNSIGNED)
+         )
+       )
       WHERE t.user_id = ? AND t.id = ?
       LIMIT 1
     `,
@@ -244,14 +427,25 @@ router.get("/", async (req, res) => {
       `
         SELECT t.user_id, t.id, t.content, t.tag, t.due_at, t.completed, t.completed_at,
                t.updated_at, t.deleted_at, t.client_id, t.rev, t.source, t.vision_id,
+               t.emotion_before, t.emotion_after, t.energy_before, t.energy_after,
+               t.is_active_choice, t.engagement_level, t.completion_feeling, t.life_dimension,
+               t.behavior_type, t.ai_tags, t.reflection_note, t.vision_board_id,
+               t.energy_feedback, t.meaning_feedback,
                CASE
-                 WHEN t.source = 'vision' THEN vb.name
+                 WHEN t.source = 'vision' OR t.vision_board_id IS NOT NULL THEN vb.name
                  ELSE NULL
                END AS vision_name
         FROM todos t
         LEFT JOIN vision_boards vb
-          ON vb.id = t.vision_id
-         AND vb.user_id = t.user_id
+          ON vb.user_id = t.user_id
+         AND (
+           (t.vision_id IS NOT NULL AND vb.id = t.vision_id)
+           OR (
+             t.vision_board_id IS NOT NULL
+             AND t.vision_board_id REGEXP '^[0-9]+$'
+             AND vb.id = CAST(t.vision_board_id AS UNSIGNED)
+           )
+         )
         WHERE t.user_id = ?
           ${whereDeleted}
           ${whereCursor}
@@ -323,17 +517,79 @@ router.post("/", async (req, res) => {
   const completed = parseCompletedFromTodo(todo);
   const completedAt = todo.completed_at ?? todo.completedAt;
   const completedAtDt = completedAt ? new Date(completedAt) : null;
+  const emotionBefore = normalizeShortText(todo.emotion_before ?? todo.emotionBefore, 32);
+  const emotionAfter = normalizeShortText(todo.emotion_after ?? todo.emotionAfter, 32);
+  const energyBefore = parseNullableInt(todo.energy_before ?? todo.energyBefore, { min: 0, max: 10 });
+  const energyAfter = parseNullableInt(todo.energy_after ?? todo.energyAfter, { min: 0, max: 10 });
+  const isActiveChoice = parseNullableBool(todo.is_active_choice ?? todo.isActiveChoice);
+  const engagementLevel = parseNullableInt(todo.engagement_level ?? todo.engagementLevel, {
+    min: 1,
+    max: 5
+  });
+  const completionFeeling = normalizeShortText(
+    todo.completion_feeling ?? todo.completionFeeling,
+    64
+  );
+  let lifeDimension = normalizeShortText(todo.life_dimension ?? todo.lifeDimension, 20);
+  let behaviorType = normalizeShortText(todo.behavior_type ?? todo.behaviorType, 20);
+  let aiTags = parseAiTagsInput(todo.ai_tags ?? todo.aiTags);
+  const reflectionNote = normalizeReflectionText(todo.reflection_note ?? todo.reflectionNote);
+  const visionBoardId = pickVisionBoardIdForTodo(todo);
+  const energyFeedback = normalizeEnergyFeedback(todo.energy_feedback ?? todo.energyFeedback);
+  const meaningFeedback = normalizeMeaningFeedback(todo.meaning_feedback ?? todo.meaningFeedback);
 
   const now = nowDate();
   const createdAt = todo.created_at ?? todo.createdAt;
   const createdAtDt = createdAt ? new Date(createdAt) : now;
 
+  if (engagementLevel === null && (todo.engagement_level !== undefined || todo.engagementLevel !== undefined)) {
+    return res.status(400).json({ error: "engagement_level 必须是 1-5 的整数" });
+  }
+  if (energyBefore === null && (todo.energy_before !== undefined || todo.energyBefore !== undefined)) {
+    return res.status(400).json({ error: "energy_before 必须是 0-10 的整数" });
+  }
+  if (energyAfter === null && (todo.energy_after !== undefined || todo.energyAfter !== undefined)) {
+    return res.status(400).json({ error: "energy_after 必须是 0-10 的整数" });
+  }
+  if (energyFeedback === "__invalid__") {
+    return res.status(400).json({ error: "energy_feedback 必须为 positive/neutral/negative" });
+  }
+  if (meaningFeedback === "__invalid__") {
+    return res.status(400).json({ error: "meaning_feedback 必须为 high/medium/low" });
+  }
+
+  if (!aiTags && deepseekEnabled() && process.env.ENABLE_TODO_AI_TAGGING !== "0") {
+    try {
+      aiTags = await analyzeTodoWithDeepSeek({
+        title: content,
+        duration: todo.duration ?? todo.duration_minutes ?? todo.durationMinutes ?? null,
+        emotion_after: emotionAfter,
+        engagement_level: engagementLevel,
+        reflection_note: reflectionNote,
+        life_dimension: lifeDimension,
+        behavior_type: behaviorType
+      });
+      if (aiTags?.life_dimension && !lifeDimension) lifeDimension = aiTags.life_dimension;
+      if (aiTags?.behavior_type && !behaviorType) behaviorType = aiTags.behavior_type;
+    } catch (aiErr) {
+      console.warn("[TODO_AI_TAGGING] 分析失败，已跳过:", aiErr?.message || aiErr);
+    }
+  }
+
   let connection;
 
   try {
+    const attachmentsInput = normalizeTodoAttachmentsInput(todo.attachments);
     await ensureTodosVisionColumns(pool);
     connection = await pool.getConnection();
     await connection.beginTransaction();
+
+    if (visionBoardId !== undefined) {
+      const ok = await validateVisionBoardOwnership(connection, userId, visionBoardId);
+      if (!ok) {
+        throw Object.assign(new Error("vision_board_id 不存在或不属于当前用户"), { status: 400 });
+      }
+    }
 
     const [existingRows] = await connection.query(
       `
@@ -389,9 +645,12 @@ router.post("/", async (req, res) => {
         `
           INSERT INTO todos
             (user_id, id, content, tag, due_at, completed, completed_at,
-             created_at, updated_at, deleted_at, client_id, last_request_id, rev, source, vision_id)
+             created_at, updated_at, deleted_at, client_id, last_request_id, rev, source, vision_id,
+             emotion_before, emotion_after, energy_before, energy_after, is_active_choice,
+             engagement_level, completion_feeling, life_dimension, behavior_type, ai_tags, reflection_note,
+             vision_board_id, energy_feedback, meaning_feedback)
           VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           userId,
@@ -406,9 +665,26 @@ router.post("/", async (req, res) => {
           clientId,
           requestId,
           sourceVal,
-          visionIdVal
+          visionIdVal,
+          emotionBefore,
+          emotionAfter,
+          energyBefore,
+          energyAfter,
+          isActiveChoice,
+          engagementLevel,
+          completionFeeling,
+          lifeDimension,
+          behaviorType,
+          aiTags ? JSON.stringify(aiTags) : null,
+          reflectionNote,
+          visionBoardId === undefined ? null : visionBoardId,
+          energyFeedback === undefined ? null : energyFeedback,
+          meaningFeedback === undefined ? null : meaningFeedback
         ]
       );
+      if (attachmentsInput.provided) {
+        await replaceTodoAttachments(connection, userId, id, attachmentsInput.items, now);
+      }
       const vbtId = parseVisionBoardTodoIdFromUnifiedId(id);
       if (vbtId != null) {
         await mirrorUnifiedTodoToVisionRow(connection, userId, id, {
@@ -439,6 +715,19 @@ router.post("/", async (req, res) => {
       "due_at = ?",
       "completed = ?",
       "completed_at = ?",
+      "emotion_before = ?",
+      "emotion_after = ?",
+      "energy_before = ?",
+      "energy_after = ?",
+      "is_active_choice = ?",
+      "engagement_level = ?",
+      "completion_feeling = ?",
+      "life_dimension = ?",
+      "behavior_type = ?",
+      "ai_tags = ?",
+      "reflection_note = ?",
+      "energy_feedback = ?",
+      "meaning_feedback = ?",
       "deleted_at = NULL",
       "client_id = ?",
       "last_request_id = ?",
@@ -450,6 +739,19 @@ router.post("/", async (req, res) => {
       dueAtDt,
       completed,
       completedAtDt,
+      emotionBefore,
+      emotionAfter,
+      energyBefore,
+      energyAfter,
+      isActiveChoice,
+      engagementLevel,
+      completionFeeling,
+      lifeDimension,
+      behaviorType,
+      aiTags ? JSON.stringify(aiTags) : null,
+      reflectionNote,
+      energyFeedback === undefined ? null : energyFeedback,
+      meaningFeedback === undefined ? null : meaningFeedback,
       clientId,
       requestId,
       now
@@ -466,6 +768,13 @@ router.post("/", async (req, res) => {
       setParts.push("vision_id = ?");
       updVals.push(pickVisionIdForTodo(todo));
     }
+    if (
+      Object.prototype.hasOwnProperty.call(todo, "vision_board_id") ||
+      Object.prototype.hasOwnProperty.call(todo, "visionBoardId")
+    ) {
+      setParts.push("vision_board_id = ?");
+      updVals.push(visionBoardId);
+    }
     setParts.push("rev = rev + 1");
     updVals.push(userId, id);
 
@@ -473,6 +782,9 @@ router.post("/", async (req, res) => {
       `UPDATE todos SET ${setParts.join(", ")} WHERE user_id = ? AND id = ?`,
       updVals
     );
+    if (attachmentsInput.provided) {
+      await replaceTodoAttachments(connection, userId, id, attachmentsInput.items, now);
+    }
 
     if (parseVisionBoardTodoIdFromUnifiedId(id) != null) {
       await mirrorUnifiedTodoToVisionRow(connection, userId, id, {
@@ -524,7 +836,141 @@ router.post("/", async (req, res) => {
     if (err?.status === 409) {
       return res.status(409).json({ error: "CONFLICT", message: err.message, server_rev: err.server_rev ?? null });
     }
+    if (err?.status && err?.status >= 400 && err?.status < 500) {
+      return res.status(err.status).json({ error: "VALIDATION_ERROR", message: err.message });
+    }
     res.status(500).json({ error: "创建/更新 Todo 失败" });
+  }
+});
+
+/**
+ * AI 分析待办行为标签（DeepSeek）
+ * POST /api/todos/ai/analyze
+ */
+router.post("/ai/analyze", async (req, res) => {
+  try {
+    if (!deepseekEnabled()) {
+      return res.status(400).json({ error: "DEEPSEEK_NOT_CONFIGURED" });
+    }
+
+    const todo = req.body?.todo && typeof req.body.todo === "object" ? req.body.todo : req.body || {};
+    const title = String(todo.title ?? todo.content ?? "").trim();
+    if (!title) {
+      return res.status(400).json({ error: "title/content 不能为空" });
+    }
+
+    const payload = {
+      title: title.slice(0, 200),
+      duration: todo.duration ?? todo.duration_minutes ?? todo.durationMinutes ?? null,
+      emotion_after: normalizeShortText(todo.emotion_after ?? todo.emotionAfter, 32),
+      engagement_level: parseNullableInt(todo.engagement_level ?? todo.engagementLevel, {
+        min: 1,
+        max: 5
+      }),
+      reflection_note: normalizeReflectionText(todo.reflection_note ?? todo.reflectionNote),
+      life_dimension: normalizeShortText(todo.life_dimension ?? todo.lifeDimension, 20),
+      behavior_type: normalizeShortText(todo.behavior_type ?? todo.behaviorType, 20)
+    };
+
+    const aiTags = await analyzeTodoWithDeepSeek(payload);
+    if (!aiTags) {
+      return res.status(502).json({ error: "AI_ANALYSIS_EMPTY" });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        life_dimension: aiTags.life_dimension ?? null,
+        behavior_type: aiTags.behavior_type ?? null,
+        ai_tags: aiTags
+      }
+    });
+  } catch (err) {
+    console.error("[TODO_AI_ANALYZE] 错误", err);
+    return res.status(500).json({ error: "AI 分析失败" });
+  }
+});
+
+/**
+ * 完成待办（支持轻量反馈）
+ * PATCH /api/todos/:id/complete
+ */
+router.patch("/:id/complete", async (req, res) => {
+  const userId = req.userId;
+  const { id } = req.params;
+  const body = req.body || {};
+  const completedRaw = body.completed;
+  const completed = completedRaw === undefined ? true : parseBool(completedRaw, true);
+  const energyFeedback = normalizeEnergyFeedback(body.energy_feedback ?? body.energyFeedback);
+  const meaningFeedback = normalizeMeaningFeedback(body.meaning_feedback ?? body.meaningFeedback);
+  const reflectionNote = normalizeReflectionText(body.reflection_note ?? body.reflectionNote);
+
+  if (energyFeedback === "__invalid__") {
+    return res.status(400).json({ error: "energy_feedback 必须为 positive/neutral/negative" });
+  }
+  if (meaningFeedback === "__invalid__") {
+    return res.status(400).json({ error: "meaning_feedback 必须为 high/medium/low" });
+  }
+
+  let connection;
+  try {
+    const now = nowDate();
+    await ensureTodosVisionColumns(pool);
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    const [rows] = await connection.query(
+      `
+        SELECT id
+        FROM todos
+        WHERE user_id = ? AND id = ? AND deleted_at IS NULL
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [userId, id]
+    );
+    if (!rows.length) {
+      await connection.rollback();
+      connection.release();
+      return res.status(404).json({ error: "待办不存在" });
+    }
+
+    const setParts = ["completed = ?", "completed_at = ?", "updated_at = ?", "rev = rev + 1"];
+    const values = [completed ? 1 : 0, completed ? now : null, now];
+
+    if (energyFeedback !== undefined) {
+      setParts.push("energy_feedback = ?");
+      values.push(energyFeedback);
+    }
+    if (meaningFeedback !== undefined) {
+      setParts.push("meaning_feedback = ?");
+      values.push(meaningFeedback);
+    }
+    if (body.reflection_note !== undefined || body.reflectionNote !== undefined) {
+      setParts.push("reflection_note = ?");
+      values.push(reflectionNote);
+    }
+
+    values.push(userId, id);
+    await connection.query(
+      `UPDATE todos SET ${setParts.join(", ")} WHERE user_id = ? AND id = ?`,
+      values
+    );
+
+    const item = await loadTodoItemForResponse(connection, userId, id, false);
+    await connection.commit();
+    connection.release();
+    connection = null;
+    return res.json({ todo: item });
+  } catch (err) {
+    try {
+      if (connection) await connection.rollback();
+    } catch {}
+    try {
+      if (connection) connection.release();
+    } catch {}
+    console.error("[完成 Todo 错误]", req.todosHttpRequestId, err);
+    return res.status(500).json({ error: "完成 Todo 失败" });
   }
 });
 

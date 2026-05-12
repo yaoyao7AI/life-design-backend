@@ -139,7 +139,7 @@ async function ensureVisionBoardTodoSchema() {
           tag VARCHAR(20) NULL,
           occur_at DATETIME(3) NULL,
           sort_order INT NOT NULL DEFAULT 0,
-          linked_todo_id VARCHAR(64) NULL,
+          linked_todo_id VARCHAR(128) NULL,
           created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
           updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
           deleted_at DATETIME(3) NULL,
@@ -155,6 +155,18 @@ async function ensureVisionBoardTodoSchema() {
       if (imageUrlCols.length === 0) {
         await pool.query(
           "ALTER TABLE vision_board_todos ADD COLUMN image_url VARCHAR(1024) NULL AFTER content"
+        );
+      }
+      const [linkedTodoIdCols] = await pool.query(
+        "SHOW COLUMNS FROM vision_board_todos LIKE 'linked_todo_id'"
+      );
+      if (
+        linkedTodoIdCols.length > 0 &&
+        /^varchar\((\d+)\)$/i.test(String(linkedTodoIdCols[0]?.Type || "")) &&
+        Number(String(linkedTodoIdCols[0].Type).match(/^varchar\((\d+)\)$/i)?.[1] || 0) < 128
+      ) {
+        await pool.query(
+          "ALTER TABLE vision_board_todos MODIFY COLUMN linked_todo_id VARCHAR(128) NULL"
         );
       }
       await ensureTodosVisionColumns(pool);

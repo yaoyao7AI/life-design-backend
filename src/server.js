@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import app from "./app.js";
 import { ensureSyncSchema } from "./utils/ensureSyncSchema.js";
+import { startWeeklyReportScheduler } from "./jobs/weeklyReportScheduler.js";
 
 dotenv.config();
 
@@ -17,6 +18,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // 可控的自动建表（默认关闭：AUTO_MIGRATE_SYNC_SCHEMA=1 才启用）
 ensureSyncSchema();
+startWeeklyReportScheduler();
 
 const server = app.listen(PORT, () => {
   console.log(`🚀 Backend running on port ${PORT}`);

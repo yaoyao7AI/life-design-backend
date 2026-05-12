@@ -170,17 +170,28 @@ router.get("/me", async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    const [rows] = await pool.query(
-      "SELECT id, phone, nickname, avatar FROM users WHERE id = ?",
-      [decoded.id]
-    );
+    const [roleColumns] = await pool.query("SHOW COLUMNS FROM users LIKE 'user_role'");
+    const selectUserSql =
+      roleColumns.length > 0
+        ? "SELECT id, phone, nickname, avatar, user_role FROM users WHERE id = ?"
+        : "SELECT id, phone, nickname, avatar FROM users WHERE id = ?";
+    const [rows] = await pool.query(selectUserSql, [decoded.id]);
 
     if (rows.length === 0) {
       return res.status(404).json({ error: "用户不存在" });
     }
 
-    res.json({ success: true, user: rows[0] });
+    const user = rows[0];
+    const roleRaw = String(user.user_role || "").trim().toLowerCase();
+    const userRole = roleRaw === "admin" || roleRaw === "advanced" ? roleRaw : "normal";
+    res.json({
+      success: true,
+      user: {
+        ...user,
+        user_role: userRole,
+        is_advanced_mode: userRole === "advanced" || userRole === "admin"
+      }
+    });
   } catch (err) {
     console.error("JWT 错误:", err);
     res.status(401).json({ error: "token 无效或已过期" });

@@ -5,7 +5,7 @@ import {
   generateReportData,
   getCurrentWeekRange,
   getWeekRangeByOffset,
-} from "../utils/weeklyReportUtils.js";
+} from "../utils/weeklyReportLifeDesignUtils.js";
 
 const router = Router();
 router.use(authenticateToken);
@@ -21,7 +21,25 @@ async function ensureWeeklyReportsSchema() {
           user_id BIGINT NOT NULL,
           week_start DATE NOT NULL,
           week_end DATE NOT NULL,
+          health_score DECIMAL(5,2) NULL,
+          work_score DECIMAL(5,2) NULL,
+          play_score DECIMAL(5,2) NULL,
+          love_score DECIMAL(5,2) NULL,
+          energy_score DECIMAL(5,2) NULL,
+          balance_score DECIMAL(5,2) NULL,
+          coherence_score DECIMAL(5,2) NULL,
+          top_positive_behaviors JSON NULL,
+          top_negative_behaviors JSON NULL,
+          weekly_summary TEXT NULL,
+          weekly_insight TEXT NULL,
+          prototype_suggestions JSON NULL,
+          radar_data JSON NULL,
+          chart_data JSON NULL,
           status ENUM('pending','generating','completed','failed') NOT NULL DEFAULT 'pending',
+          ai_status ENUM('generating','completed','failed','local_rule_generated') NOT NULL DEFAULT 'local_rule_generated',
+          prompt_version VARCHAR(32) NULL,
+          model_version VARCHAR(64) NULL,
+          rule_version VARCHAR(32) NULL,
           report_data JSON NULL,
           error_message VARCHAR(500) NULL,
           created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -31,7 +49,58 @@ async function ensureWeeklyReportsSchema() {
           KEY idx_wr_user_updated (user_id, updated_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
       `)
-      .then(() => true)
+      .then(async () => {
+        async function ensureColumn(column, ddl) {
+          const [rows] = await pool.query("SHOW COLUMNS FROM weekly_reports LIKE ?", [column]);
+          if (rows.length > 0) return;
+          await pool.query(`ALTER TABLE weekly_reports ADD COLUMN ${ddl}`);
+        }
+
+        await ensureColumn("health_score", "health_score DECIMAL(5,2) NULL AFTER week_end");
+        await ensureColumn("work_score", "work_score DECIMAL(5,2) NULL AFTER health_score");
+        await ensureColumn("play_score", "play_score DECIMAL(5,2) NULL AFTER work_score");
+        await ensureColumn("love_score", "love_score DECIMAL(5,2) NULL AFTER play_score");
+        await ensureColumn("energy_score", "energy_score DECIMAL(5,2) NULL AFTER love_score");
+        await ensureColumn("balance_score", "balance_score DECIMAL(5,2) NULL AFTER energy_score");
+        await ensureColumn("coherence_score", "coherence_score DECIMAL(5,2) NULL AFTER balance_score");
+        await ensureColumn("top_positive_behaviors", "top_positive_behaviors JSON NULL");
+        await ensureColumn("top_negative_behaviors", "top_negative_behaviors JSON NULL");
+        await ensureColumn("weekly_summary", "weekly_summary TEXT NULL");
+        await ensureColumn("weekly_insight", "weekly_insight TEXT NULL");
+        await ensureColumn("prototype_suggestions", "prototype_suggestions JSON NULL");
+        await ensureColumn("radar_data", "radar_data JSON NULL");
+        await ensureColumn("chart_data", "chart_data JSON NULL");
+        await ensureColumn(
+          "ai_status",
+          "ai_status ENUM('generating','completed','failed','local_rule_generated') NOT NULL DEFAULT 'local_rule_generated' AFTER status"
+        );
+        await ensureColumn("prompt_version", "prompt_version VARCHAR(32) NULL AFTER ai_status");
+        await ensureColumn("model_version", "model_version VARCHAR(64) NULL AFTER prompt_version");
+        await ensureColumn("rule_version", "rule_version VARCHAR(32) NULL AFTER model_version");
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS weekly_report_ai_logs (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            weekly_report_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            week_start DATE NOT NULL,
+            prompt LONGTEXT NULL,
+            response LONGTEXT NULL,
+            tokens INT NULL,
+            model VARCHAR(64) NULL,
+            duration_ms INT NULL,
+            prompt_version VARCHAR(32) NULL,
+            model_version VARCHAR(64) NULL,
+            rule_version VARCHAR(32) NULL,
+            created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+            KEY idx_wral_user_week (user_id, week_start),
+            KEY idx_wral_report (weekly_report_id),
+            CONSTRAINT fk_wral_report
+              FOREIGN KEY (weekly_report_id) REFERENCES weekly_reports(id)
+                ON DELETE CASCADE ON UPDATE CASCADE
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+        return true;
+      })
       .catch((err) => {
         weeklyReportsSchemaEnsuredPromise = null;
         console.warn("[weekly_reports] 建表失败:", err?.message || err);
@@ -68,13 +137,159 @@ function parseJsonMaybe(v) {
   }
 }
 
+function normalizeStatus(status, hasReport) {
+  if (!hasReport) return "not_generated";
+  if (status === "completed" || status === "failed" || status === "generating") return status;
+  if (status === "pending") return "generating";
+  return "generating";
+}
+
+function normalizeAiStatus(aiStatus, status) {
+  if (aiStatus === "generating" || aiStatus === "completed" || aiStatus === "failed" || aiStatus === "local_rule_generated") {
+    return aiStatus;
+  }
+  if (status === "failed") return "failed";
+  if (status === "generating") return "generating";
+  return "completed";
+}
+
+function toArrayMaybe(v) {
+  if (Array.isArray(v)) return v;
+  return [];
+}
+
+function buildReportDataShape(row, reportData) {
+  const raw = reportData && typeof reportData === "object" && !Array.isArray(reportData) ? reportData : {};
+  const quadrantSource =
+    raw.quadrant_dashboard && typeof raw.quadrant_dashboard === "object" ? raw.quadrant_dashboard : {};
+  const scoreFromCol = (k) => (row?.[k] != null ? Number(row[k]) : null);
+  const buildQuadrantItem = (key, fallbackScore) => {
+    const src = quadrantSource[key];
+    if (src && typeof src === "object") {
+      return {
+        score: Number.isFinite(Number(src.score)) ? Number(src.score) : fallbackScore,
+        duration: src.duration ?? null,
+        energy_status: src.energy_status ?? null,
+        summary: src.summary ?? null
+      };
+    }
+    return {
+      score: fallbackScore,
+      duration: null,
+      energy_status: null,
+      summary: null
+    };
+  };
+
+  const radarRaw = raw.radar_data;
+  let radarData = radarRaw ?? null;
+  if (radarData && Array.isArray(radarData)) {
+    radarData = radarData.map((item) => ({
+      name: item?.name ?? "",
+      score: Number.isFinite(Number(item?.score)) ? Number(item.score) : 0
+    }));
+  }
+
+  const timeDist = raw.time_distribution && typeof raw.time_distribution === "object"
+    ? raw.time_distribution
+    : {};
+
+  return {
+    ...raw,
+    main_insight: raw.main_insight ?? row?.weekly_insight ?? null,
+    main_problem: raw.main_problem ?? null,
+    main_direction: raw.main_direction ?? null,
+    quadrant_dashboard: {
+      health: buildQuadrantItem("health", scoreFromCol("health_score")),
+      work: buildQuadrantItem("work", scoreFromCol("work_score")),
+      play: buildQuadrantItem("play", scoreFromCol("play_score")),
+      love: buildQuadrantItem("love", scoreFromCol("love_score"))
+    },
+    radar_data: radarData,
+    time_distribution: {
+      health_hours: Number.isFinite(Number(timeDist.health_hours)) ? Number(timeDist.health_hours) : null,
+      work_hours: Number.isFinite(Number(timeDist.work_hours)) ? Number(timeDist.work_hours) : null,
+      play_hours: Number.isFinite(Number(timeDist.play_hours)) ? Number(timeDist.play_hours) : null,
+      love_hours: Number.isFinite(Number(timeDist.love_hours)) ? Number(timeDist.love_hours) : null,
+      total_hours: Number.isFinite(Number(timeDist.total_hours)) ? Number(timeDist.total_hours) : null
+    },
+    top_positive_behaviors: toArrayMaybe(raw.top_positive_behaviors).slice(0, 3),
+    top_negative_behaviors: toArrayMaybe(raw.top_negative_behaviors).slice(0, 3),
+    vision_alignment:
+      raw.vision_alignment && typeof raw.vision_alignment === "object"
+        ? {
+            aligned_visions: toArrayMaybe(raw.vision_alignment.aligned_visions),
+            deviated_visions: toArrayMaybe(raw.vision_alignment.deviated_visions),
+            summary: raw.vision_alignment.summary ?? null
+          }
+        : {
+            aligned_visions: [],
+            deviated_visions: [],
+            summary: null
+          },
+    problem_type: raw.problem_type ?? null,
+    problem_summary: raw.problem_summary ?? null,
+    reframe_suggestion:
+      (raw.reframe_suggestion && typeof raw.reframe_suggestion === "object")
+        ? {
+            original_problem: raw.reframe_suggestion.original_problem ?? null,
+            reframed_problem: raw.reframe_suggestion.reframed_problem ?? null,
+            small_action: raw.reframe_suggestion.small_action ?? null
+          }
+        : (raw.reframing && typeof raw.reframing === "object")
+          ? {
+              original_problem: raw.reframing.original_problem ?? null,
+              reframed_problem: raw.reframing.reframed_problem ?? null,
+              small_action: raw.reframing.small_action ?? null
+            }
+          : {
+              original_problem: null,
+              reframed_problem: null,
+              small_action: null
+            },
+    reframing:
+      (raw.reframing && typeof raw.reframing === "object")
+        ? {
+            original_problem: raw.reframing.original_problem ?? null,
+            reframed_problem: raw.reframing.reframed_problem ?? null,
+            small_action: raw.reframing.small_action ?? null
+          }
+        : {
+            original_problem: null,
+            reframed_problem: null,
+            small_action: null
+          },
+    prototype_experiments: toArrayMaybe(raw.prototype_experiments)
+  };
+}
+
 function formatReport(row) {
+  const rawReportData = parseJsonMaybe(row.report_data) || {};
+  const reportData = buildReportDataShape(row, rawReportData);
+  const generatedAt = rawReportData.generated_at || toIso(row.updated_at);
+  const status = normalizeStatus(row.status, true);
   return {
     id: String(row.id),
     week_start: toDateOnly(row.week_start),
     week_end: toDateOnly(row.week_end),
-    status: row.status,
-    report_data: parseJsonMaybe(row.report_data),
+    generated_at: generatedAt,
+    ai_status: normalizeAiStatus(row.ai_status || rawReportData.ai_status, status),
+    health_score: row.health_score != null ? Number(row.health_score) : null,
+    work_score: row.work_score != null ? Number(row.work_score) : null,
+    play_score: row.play_score != null ? Number(row.play_score) : null,
+    love_score: row.love_score != null ? Number(row.love_score) : null,
+    energy_score: row.energy_score != null ? Number(row.energy_score) : null,
+    balance_score: row.balance_score != null ? Number(row.balance_score) : null,
+    coherence_score: row.coherence_score != null ? Number(row.coherence_score) : null,
+    top_positive_behaviors: parseJsonMaybe(row.top_positive_behaviors) ?? [],
+    top_negative_behaviors: parseJsonMaybe(row.top_negative_behaviors) ?? [],
+    weekly_summary: row.weekly_summary ?? null,
+    weekly_insight: row.weekly_insight ?? null,
+    prototype_suggestions: parseJsonMaybe(row.prototype_suggestions) ?? [],
+    radar_data: parseJsonMaybe(row.radar_data),
+    chart_data: parseJsonMaybe(row.chart_data),
+    status,
+    report_data: reportData,
     error_message: row.error_message ?? null,
     created_at: toIso(row.created_at),
     updated_at: toIso(row.updated_at),
@@ -82,18 +297,62 @@ function formatReport(row) {
 }
 
 function formatReportSummary(row) {
+  const reportData = parseJsonMaybe(row.report_data) || {};
+  const status = normalizeStatus(row.status, true);
   return {
     id: String(row.id),
     week_start: toDateOnly(row.week_start),
     week_end: toDateOnly(row.week_end),
-    status: row.status,
+    status,
+    generated_at: reportData.generated_at || toIso(row.updated_at),
+    ai_status: normalizeAiStatus(row.ai_status || reportData.ai_status, status),
+    health_score: row.health_score != null ? Number(row.health_score) : null,
+    work_score: row.work_score != null ? Number(row.work_score) : null,
+    play_score: row.play_score != null ? Number(row.play_score) : null,
+    love_score: row.love_score != null ? Number(row.love_score) : null,
+    balance_score: row.balance_score != null ? Number(row.balance_score) : null,
     created_at: toIso(row.created_at),
     updated_at: toIso(row.updated_at),
   };
 }
 
+function formatTopBarMeta(row, fallbackRange = null) {
+  if (!row) {
+    return {
+      status: "not_generated",
+      week_start: fallbackRange?.start || null,
+      week_end: fallbackRange?.end || null,
+      generated_at: null,
+      ai_status: null
+    };
+  }
+  const reportData = parseJsonMaybe(row.report_data) || {};
+  const status = normalizeStatus(row.status, true);
+  return {
+    status,
+    week_start: toDateOnly(row.week_start),
+    week_end: toDateOnly(row.week_end),
+    generated_at: reportData.generated_at || toIso(row.updated_at),
+    ai_status: normalizeAiStatus(row.ai_status || reportData.ai_status, status)
+  };
+}
+
+function parseDateValue(v) {
+  const d = new Date(v);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
 function isDateOnlyString(s) {
   return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function normalizeWeekOffsetInput(value) {
+  const offset = Number(value);
+  if (!Number.isInteger(offset)) return null;
+  // 兼容前端写法：1=1周前，2=2周前
+  const normalized = offset > 0 ? -offset : offset;
+  if (normalized > 0 || normalized < -52) return null;
+  return normalized;
 }
 
 /**
@@ -120,9 +379,9 @@ function resolveWeekRangeFromInput(body) {
       error: "请提供 week_start 与 week_end，或提供 week_offset（0 至 -52 的整数）",
     };
   }
-  const offset = Number(b.week_offset);
-  if (!Number.isInteger(offset) || offset > 0 || offset < -52) {
-    return { error: "week_offset 须为 0 到 -52 的整数" };
+  const offset = normalizeWeekOffsetInput(b.week_offset);
+  if (offset === null) {
+    return { error: "week_offset 须为 0 到 52 的整数（正数代表过去几周）" };
   }
   return getWeekRangeByOffset(offset);
 }
@@ -158,6 +417,43 @@ function mergeAiNarrativePayload(prevReportData, body) {
   return { ...prev, ai_narrative: nextAi };
 }
 
+async function insertAiGenerationLog({
+  reportId,
+  userId,
+  weekStart,
+  prompt,
+  response,
+  tokens,
+  model,
+  durationMs,
+  promptVersion,
+  modelVersion,
+  ruleVersion
+}) {
+  try {
+    await pool.query(
+      `INSERT INTO weekly_report_ai_logs
+         (weekly_report_id, user_id, week_start, prompt, response, tokens, model, duration_ms, prompt_version, model_version, rule_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        reportId,
+        userId,
+        weekStart,
+        prompt || null,
+        response || null,
+        Number.isFinite(Number(tokens)) ? Number(tokens) : null,
+        model || null,
+        Number.isFinite(Number(durationMs)) ? Number(durationMs) : null,
+        promptVersion || null,
+        modelVersion || null,
+        ruleVersion || null
+      ]
+    );
+  } catch (err) {
+    console.warn("[weekly_report_ai_logs] 写入失败:", err?.message || err);
+  }
+}
+
 /**
  * 获取本周周报
  * GET /api/weekly-reports/current
@@ -181,9 +477,13 @@ router.get("/current", async (req, res) => {
       return res.json({
         success: true,
         data: {
+          id: null,
           status: "not_generated",
           week_start: start,
           week_end: end,
+          generated_at: null,
+          ai_status: null,
+          error_message: null,
           report_data: null,
         },
       });
@@ -211,7 +511,9 @@ router.get("/history", async (req, res) => {
     const offset = Math.max(Number(req.query.offset) || 0, 0);
 
     const [rows] = await pool.query(
-      `SELECT id, week_start, week_end, status, created_at, updated_at
+      `SELECT id, week_start, week_end, status,
+              health_score, work_score, play_score, love_score, balance_score,
+              created_at, updated_at
        FROM weekly_reports
        WHERE user_id = ?
        ORDER BY week_start DESC
@@ -240,6 +542,234 @@ router.get("/history", async (req, res) => {
 });
 
 /**
+ * 获取指定周周报详情（按 week_start）
+ * GET /api/weekly-reports/:week_start
+ */
+router.get("/:week_start", async (req, res) => {
+  try {
+    await ensureWeeklyReportsSchema();
+    const userId = req.userId;
+    const { week_start: weekStart } = req.params;
+    if (!isDateOnlyString(weekStart)) {
+      return res.status(400).json({ error: "week_start 格式需为 YYYY-MM-DD" });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT * FROM weekly_reports
+       WHERE user_id = ? AND week_start = ?
+       LIMIT 1`,
+      [userId, weekStart]
+    );
+
+    if (rows.length === 0) {
+      const rangeStart = parseDateValue(`${weekStart}T00:00:00`);
+      const rangeEnd = rangeStart ? new Date(rangeStart) : null;
+      if (rangeEnd) rangeEnd.setDate(rangeEnd.getDate() + 6);
+      return res.json({
+        success: true,
+        data: {
+          id: null,
+          ...formatTopBarMeta(null, {
+            start: weekStart,
+            end: rangeEnd ? toDateOnly(rangeEnd) : null
+          }),
+          error_message: null,
+          report_data: null
+        }
+      });
+    }
+
+    const report = formatReport(rows[0]);
+    return res.json({
+      success: true,
+      data: {
+        ...formatTopBarMeta(rows[0]),
+        ...report
+      },
+    });
+  } catch (err) {
+    console.error("[按周获取周报错误]", err);
+    return res.status(500).json({ error: "获取周报失败" });
+  }
+});
+
+/**
+ * 获取周报行为明细（分页）
+ * GET /api/weekly-reports/:id/behaviors
+ */
+router.get("/:id/behaviors", async (req, res) => {
+  try {
+    await ensureWeeklyReportsSchema();
+    const userId = req.userId;
+    const { id } = req.params;
+    if (!/^\d+$/.test(String(id))) {
+      return res.status(400).json({ error: "id 非法" });
+    }
+
+    const [reportRows] = await pool.query(
+      `SELECT id, week_start, week_end
+       FROM weekly_reports
+       WHERE id = ? AND user_id = ?
+       LIMIT 1`,
+      [id, userId]
+    );
+    if (!reportRows.length) {
+      return res.status(404).json({ error: "周报不存在" });
+    }
+
+    const weekStart = toDateOnly(reportRows[0].week_start);
+    const weekEnd = toDateOnly(reportRows[0].week_end);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+
+    const filters = ["user_id = ?", "deleted_at IS NULL", "updated_at >= ?", "updated_at < DATE_ADD(?, INTERVAL 1 DAY)"];
+    const args = [userId, weekStart, weekEnd];
+
+    const lifeDimension = req.query.dimension != null ? String(req.query.dimension).trim() : "";
+    if (lifeDimension) {
+      filters.push("life_dimension = ?");
+      args.push(lifeDimension);
+    }
+
+    const completedRaw = req.query.completed;
+    if (completedRaw === "1" || completedRaw === "0" || completedRaw === "true" || completedRaw === "false") {
+      const completed = completedRaw === "1" || completedRaw === "true" ? 1 : 0;
+      filters.push("completed = ?");
+      args.push(completed);
+    }
+
+    const energyMin = Number(req.query.energy_min);
+    if (Number.isFinite(energyMin)) {
+      filters.push("energy_after >= ?");
+      args.push(energyMin);
+    }
+    const energyMax = Number(req.query.energy_max);
+    if (Number.isFinite(energyMax)) {
+      filters.push("energy_after <= ?");
+      args.push(energyMax);
+    }
+
+    const whereSql = filters.join(" AND ");
+    const [rows] = await pool.query(
+      `SELECT id, content, completed, due_at, life_dimension, behavior_type, ai_tags, energy_before, energy_after, updated_at, completed_at, completion_feeling
+       FROM todos
+       WHERE ${whereSql}
+       ORDER BY updated_at DESC
+       LIMIT ? OFFSET ?`,
+      [...args, limit, offset]
+    );
+    const [countRows] = await pool.query(
+      `SELECT COUNT(*) AS total
+       FROM todos
+       WHERE ${whereSql}`,
+      args
+    );
+
+    const items = rows.map((row) => {
+      const aiTags = parseJsonMaybe(row.ai_tags);
+      const aiTagsArray = Array.isArray(aiTags) ? aiTags : [];
+      return {
+        id: String(row.id),
+        title: row.content,
+        content: row.content,
+        completed: !!row.completed,
+        due_at: toIso(row.due_at),
+        life_dimension: row.life_dimension ?? aiTags?.life_dimension ?? null,
+        behavior_type: row.behavior_type ?? aiTags?.behavior_type ?? null,
+        energy_before: row.energy_before != null ? Number(row.energy_before) : null,
+        energy_after: row.energy_after != null ? Number(row.energy_after) : null,
+        ai_tags: aiTagsArray,
+        completion_feeling: row.completion_feeling ?? null,
+        updated_at: toIso(row.updated_at),
+        completed_at: toIso(row.completed_at)
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        report_id: String(id),
+        week_start: weekStart,
+        week_end: weekEnd,
+        items,
+        total: Number(countRows[0]?.total || 0),
+        limit,
+        offset
+      }
+    });
+  } catch (err) {
+    console.error("[周报行为明细错误]", err);
+    return res.status(500).json({ error: "获取周报行为明细失败" });
+  }
+});
+
+/**
+ * 获取 AI 分析详情（高级模式）
+ * GET /api/weekly-reports/:id/ai-details
+ */
+router.get("/:id/ai-details", async (req, res) => {
+  try {
+    await ensureWeeklyReportsSchema();
+    const userId = req.userId;
+    const { id } = req.params;
+    if (!/^\d+$/.test(String(id))) {
+      return res.status(400).json({ error: "id 非法" });
+    }
+    const [reportRows] = await pool.query(
+      `SELECT id, week_start, week_end, status, ai_status, report_data, prompt_version, model_version, rule_version, updated_at
+       FROM weekly_reports
+       WHERE id = ? AND user_id = ?
+       LIMIT 1`,
+      [id, userId]
+    );
+    if (!reportRows.length) {
+      return res.status(404).json({ error: "周报不存在" });
+    }
+
+    const [rows] = await pool.query(
+      `SELECT id, week_start, prompt, response, tokens, model, duration_ms, prompt_version, model_version, rule_version, created_at
+       FROM weekly_report_ai_logs
+       WHERE weekly_report_id = ? AND user_id = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+      [id, userId]
+    );
+    const reportRow = reportRows[0];
+    const reportDataRaw = parseJsonMaybe(reportRow.report_data) || {};
+    const reportData = buildReportDataShape(reportRow, reportDataRaw);
+    const row = rows[0] || null;
+    const analysisJson = row ? (parseJsonMaybe(row.response) ?? row.response ?? null) : null;
+    const model = row?.model || reportDataRaw?.model || reportRow?.model_version || null;
+    const provider = reportDataRaw?.provider || reportDataRaw?.ai_narrative?.provider || null;
+
+    return res.json({
+      success: true,
+      data: {
+        id: String(reportRow.id),
+        week_start: toDateOnly(reportRow.week_start),
+        week_end: toDateOnly(reportRow.week_end),
+        status: normalizeStatus(reportRow.status, true),
+        ai_status: normalizeAiStatus(reportRow.ai_status || reportDataRaw.ai_status, normalizeStatus(reportRow.status, true)),
+        input_summary: String(row?.prompt || "").slice(0, 300) || null,
+        provider,
+        model,
+        generated_at: toIso(row?.created_at || reportRow.updated_at),
+        analysis_json: analysisJson,
+        tokens: row?.tokens != null ? Number(row.tokens) : null,
+        duration_ms: row?.duration_ms != null ? Number(row.duration_ms) : null,
+        prompt_version: row?.prompt_version || reportRow?.prompt_version || null,
+        model_version: row?.model_version || reportRow?.model_version || null,
+        rule_version: row?.rule_version || reportRow?.rule_version || null,
+        report_data: reportData
+      }
+    });
+  } catch (err) {
+    console.error("[周报AI详情错误]", err);
+    return res.status(500).json({ error: "获取AI分析详情失败" });
+  }
+});
+
+/**
  * 获取指定周报详情
  * GET /api/weekly-reports/:id
  */
@@ -248,6 +778,9 @@ router.get("/:id", async (req, res) => {
     await ensureWeeklyReportsSchema();
     const userId = req.userId;
     const { id } = req.params;
+    if (!/^\d+$/.test(String(id))) {
+      return res.status(400).json({ error: "id 非法" });
+    }
 
     const [rows] = await pool.query(
       `SELECT * FROM weekly_reports
@@ -316,23 +849,113 @@ router.post("/generate", async (req, res) => {
     if (clientReportData) {
       // ── 模式 A：前端已算好，直接存 ──
       const dataJson = JSON.stringify(clientReportData);
+      const promptVersion = String(body.prompt_version || "weekly-report-v1");
+      const modelVersion = String(body.model_version || body.model || "frontend-ai");
+      const ruleVersion = String(body.rule_version || "weekly-rule-v1");
+      const aiStatus = String(body.ai_status || "completed");
 
       if (existing.length > 0) {
         reportId = existing[0].id;
         await connection.query(
           `UPDATE weekly_reports
-           SET status = 'completed', report_data = ?, error_message = NULL, week_end = ?, updated_at = NOW(3)
+           SET status = 'completed',
+               ai_status = ?,
+               prompt_version = ?,
+               model_version = ?,
+               rule_version = ?,
+               report_data = ?,
+               top_positive_behaviors = COALESCE(?, top_positive_behaviors),
+               top_negative_behaviors = COALESCE(?, top_negative_behaviors),
+               weekly_summary = COALESCE(?, weekly_summary),
+               weekly_insight = COALESCE(?, weekly_insight),
+               prototype_suggestions = COALESCE(?, prototype_suggestions),
+               radar_data = COALESCE(?, radar_data),
+               chart_data = COALESCE(?, chart_data),
+               error_message = NULL,
+               week_end = ?,
+               updated_at = NOW(3)
            WHERE id = ? AND user_id = ?`,
-          [dataJson, weekEnd, reportId, userId]
+          [
+            aiStatus,
+            promptVersion,
+            modelVersion,
+            ruleVersion,
+            dataJson,
+            clientReportData.top_positive_behaviors
+              ? JSON.stringify(clientReportData.top_positive_behaviors)
+              : null,
+            clientReportData.top_negative_behaviors
+              ? JSON.stringify(clientReportData.top_negative_behaviors)
+              : null,
+            clientReportData.weekly_summary ?? null,
+            clientReportData.weekly_insight ?? null,
+            clientReportData.prototype_suggestions
+              ? JSON.stringify(clientReportData.prototype_suggestions)
+              : null,
+            clientReportData.radar_data ? JSON.stringify(clientReportData.radar_data) : null,
+            clientReportData.chart_data ? JSON.stringify(clientReportData.chart_data) : null,
+            weekEnd,
+            reportId,
+            userId
+          ]
         );
       } else {
         const [ins] = await connection.query(
-          `INSERT INTO weekly_reports (user_id, week_start, week_end, status, report_data)
-           VALUES (?, ?, ?, 'completed', ?)`,
-          [userId, weekStart, weekEnd, dataJson]
+          `INSERT INTO weekly_reports (
+             user_id, week_start, week_end, status, report_data,
+             ai_status, prompt_version, model_version, rule_version,
+             health_score, work_score, play_score, love_score, energy_score, balance_score, coherence_score,
+             top_positive_behaviors, top_negative_behaviors, weekly_summary, weekly_insight,
+             prototype_suggestions, radar_data, chart_data
+           )
+           VALUES (?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            userId,
+            weekStart,
+            weekEnd,
+            dataJson,
+            aiStatus,
+            promptVersion,
+            modelVersion,
+            ruleVersion,
+            clientReportData.health_score ?? null,
+            clientReportData.work_score ?? null,
+            clientReportData.play_score ?? null,
+            clientReportData.love_score ?? null,
+            clientReportData.energy_score ?? null,
+            clientReportData.balance_score ?? null,
+            clientReportData.coherence_score ?? null,
+            clientReportData.top_positive_behaviors
+              ? JSON.stringify(clientReportData.top_positive_behaviors)
+              : null,
+            clientReportData.top_negative_behaviors
+              ? JSON.stringify(clientReportData.top_negative_behaviors)
+              : null,
+            clientReportData.weekly_summary ?? null,
+            clientReportData.weekly_insight ?? null,
+            clientReportData.prototype_suggestions
+              ? JSON.stringify(clientReportData.prototype_suggestions)
+              : null,
+            clientReportData.radar_data ? JSON.stringify(clientReportData.radar_data) : null,
+            clientReportData.chart_data ? JSON.stringify(clientReportData.chart_data) : null
+          ]
         );
         reportId = ins.insertId;
       }
+
+      await insertAiGenerationLog({
+        reportId,
+        userId,
+        weekStart,
+        prompt: body.prompt || null,
+        response: dataJson,
+        tokens: body.tokens,
+        model: modelVersion,
+        durationMs: body.duration ?? body.duration_ms,
+        promptVersion,
+        modelVersion,
+        ruleVersion
+      });
 
       await connection.commit();
       connection.release();
@@ -343,6 +966,8 @@ router.post("/generate", async (req, res) => {
         data: {
           id: String(reportId),
           status: "completed",
+          generated_at: new Date().toISOString(),
+          ai_status: aiStatus,
           week_start: weekStart,
           week_end: weekEnd,
         },
@@ -358,19 +983,31 @@ router.post("/generate", async (req, res) => {
         connection = null;
         return res.json({
           success: true,
-          data: { id: String(row.id), status: "generating", message: "周报正在生成中，请稍后查看" },
+          data: {
+            id: String(row.id),
+            status: "generating",
+            ai_status: "generating",
+            message: "周报正在生成中，请稍后查看"
+          },
         });
       }
       reportId = row.id;
       await connection.query(
-        `UPDATE weekly_reports SET status = 'generating', error_message = NULL, updated_at = NOW(3)
+        `UPDATE weekly_reports
+         SET status = 'generating',
+             ai_status = 'generating',
+             error_message = NULL,
+             prompt_version = COALESCE(prompt_version, 'weekly-report-v1'),
+             model_version = COALESCE(model_version, 'local-rule-engine'),
+             rule_version = COALESCE(rule_version, 'weekly-rule-v1'),
+             updated_at = NOW(3)
          WHERE id = ? AND user_id = ?`,
         [reportId, userId]
       );
     } else {
       const [ins] = await connection.query(
-        `INSERT INTO weekly_reports (user_id, week_start, week_end, status)
-         VALUES (?, ?, ?, 'generating')`,
+        `INSERT INTO weekly_reports (user_id, week_start, week_end, status, ai_status, prompt_version, model_version, rule_version)
+         VALUES (?, ?, ?, 'generating', 'generating', 'weekly-report-v1', 'local-rule-engine', 'weekly-rule-v1')`,
         [userId, weekStart, weekEnd]
       );
       reportId = ins.insertId;
@@ -381,24 +1018,90 @@ router.post("/generate", async (req, res) => {
     connection = null;
 
     setImmediate(async () => {
+      const startedAt = Date.now();
       try {
         const reportData = await generateReportData(pool, userId, weekStart, weekEnd);
+        const reportDataJson = JSON.stringify(reportData);
+        const durationMs = Date.now() - startedAt;
         await pool.query(
           `UPDATE weekly_reports
-           SET status = 'completed', report_data = ?, error_message = NULL, updated_at = NOW(3)
+           SET status = 'completed',
+               ai_status = ?,
+               report_data = ?,
+               health_score = ?,
+               work_score = ?,
+               play_score = ?,
+               love_score = ?,
+               energy_score = ?,
+               balance_score = ?,
+               coherence_score = ?,
+               top_positive_behaviors = ?,
+               top_negative_behaviors = ?,
+               weekly_summary = ?,
+               weekly_insight = ?,
+               prototype_suggestions = ?,
+               radar_data = ?,
+               chart_data = ?,
+               error_message = NULL,
+               updated_at = NOW(3)
            WHERE id = ? AND user_id = ?`,
-          [JSON.stringify(reportData), reportId, userId]
+          [
+            reportData.ai_status || "local_rule_generated",
+            reportDataJson,
+            reportData.health_score ?? null,
+            reportData.work_score ?? null,
+            reportData.play_score ?? null,
+            reportData.love_score ?? null,
+            reportData.energy_score ?? null,
+            reportData.balance_score ?? null,
+            reportData.coherence_score ?? null,
+            JSON.stringify(reportData.top_positive_behaviors || []),
+            JSON.stringify(reportData.top_negative_behaviors || []),
+            reportData.weekly_summary ?? null,
+            reportData.weekly_insight ?? null,
+            JSON.stringify(reportData.prototype_suggestions || []),
+            JSON.stringify(reportData.radar_data || {}),
+            JSON.stringify(reportData.chart_data || {}),
+            reportId,
+            userId
+          ]
         );
+        await insertAiGenerationLog({
+          reportId,
+          userId,
+          weekStart,
+          prompt: "local-rule-engine:weekly-report-v1",
+          response: reportDataJson,
+          tokens: null,
+          model: "local-rule-engine",
+          durationMs,
+          promptVersion: "weekly-report-v1",
+          modelVersion: "local-rule-engine",
+          ruleVersion: "weekly-rule-v1"
+        });
         console.log(`[WEEKLY_REPORT] 生成成功 user=${userId} week=${weekStart}`);
       } catch (genErr) {
         console.error(`[WEEKLY_REPORT] 生成失败 user=${userId} week=${weekStart}`, genErr);
         try {
           await pool.query(
             `UPDATE weekly_reports
-             SET status = 'failed', error_message = ?, updated_at = NOW(3)
+             SET status = 'failed', ai_status = 'failed', error_message = ?, updated_at = NOW(3)
              WHERE id = ? AND user_id = ?`,
             [String(genErr?.message || "生成失败").slice(0, 500), reportId, userId]
           );
+          await insertAiGenerationLog({
+            reportId,
+            userId,
+            weekStart,
+            prompt: "local-rule-engine:weekly-report-v1",
+            response: String(genErr?.stack || genErr?.message || "生成失败"),
+            tokens: null,
+            model: "local-rule-engine",
+            durationMs: Date.now() - startedAt,
+            promptVersion: "weekly-report-v1",
+            modelVersion: "local-rule-engine",
+            ruleVersion: "weekly-rule-v1"
+          });
         } catch {}
       }
     });
@@ -408,6 +1111,7 @@ router.post("/generate", async (req, res) => {
       data: {
         id: String(reportId),
         status: "generating",
+        ai_status: "generating",
         week_start: weekStart,
         week_end: weekEnd,
         message: "周报开始生成，请稍后刷新查看",
@@ -444,6 +1148,9 @@ router.post("/upsert-ai", async (req, res) => {
 
     const weekStart = range.start;
     const weekEnd = range.end;
+    const promptVersion = String(body.prompt_version || "weekly-report-v1");
+    const modelVersion = String(body.model_version || body.model || "frontend-ai");
+    const ruleVersion = String(body.rule_version || "weekly-rule-v1");
 
     connection = await pool.getConnection();
     await connection.beginTransaction();
@@ -465,18 +1172,39 @@ router.post("/upsert-ai", async (req, res) => {
       reportId = existing[0].id;
       await connection.query(
         `UPDATE weekly_reports
-         SET report_data = ?, week_end = ?, error_message = NULL, updated_at = NOW(3)
+         SET status = 'completed',
+             ai_status = 'completed',
+             prompt_version = ?,
+             model_version = ?,
+             rule_version = ?,
+             report_data = ?, week_end = ?, error_message = NULL, updated_at = NOW(3)
          WHERE id = ? AND user_id = ?`,
-        [dataJson, weekEnd, reportId, userId]
+        [promptVersion, modelVersion, ruleVersion, dataJson, weekEnd, reportId, userId]
       );
     } else {
       const [ins] = await connection.query(
-        `INSERT INTO weekly_reports (user_id, week_start, week_end, status, report_data)
-         VALUES (?, ?, ?, 'completed', ?)`,
-        [userId, weekStart, weekEnd, dataJson]
+        `INSERT INTO weekly_reports (
+           user_id, week_start, week_end, status, ai_status, prompt_version, model_version, rule_version, report_data
+         )
+         VALUES (?, ?, ?, 'completed', 'completed', ?, ?, ?, ?)`,
+        [userId, weekStart, weekEnd, promptVersion, modelVersion, ruleVersion, dataJson]
       );
       reportId = ins.insertId;
     }
+
+    await insertAiGenerationLog({
+      reportId,
+      userId,
+      weekStart,
+      prompt: body.prompt || "frontend-ai upsert",
+      response: dataJson,
+      tokens: body.tokens,
+      model: modelVersion,
+      durationMs: body.duration ?? body.duration_ms,
+      promptVersion,
+      modelVersion,
+      ruleVersion
+    });
 
     await connection.commit();
     connection.release();
@@ -487,6 +1215,8 @@ router.post("/upsert-ai", async (req, res) => {
       data: {
         id: String(reportId),
         status: "completed",
+        generated_at: new Date().toISOString(),
+        ai_status: "completed",
         week_start: weekStart,
         week_end: weekEnd,
       },

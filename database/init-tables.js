@@ -93,7 +93,7 @@ const createTableStatements = [
       tag VARCHAR(20),
       occur_at DATETIME(3),
       sort_order INT NOT NULL DEFAULT 0,
-      linked_todo_id VARCHAR(64),
+      linked_todo_id VARCHAR(128),
       created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
       updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
       deleted_at DATETIME(3),
