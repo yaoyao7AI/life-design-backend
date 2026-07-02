@@ -1,8 +1,12 @@
 import { articleRepository, ArticleRow } from "./article.repository.js";
+import {
+  canAccessArticle as canAccessArticleByMembership,
+  membershipService,
+} from "../membership/membership.service.js";
 
 type ArticleStatus = "draft" | "published" | "archived";
 type ArticleVisibility = "public" | "members_only";
-type MembershipTier = "free" | "plus" | "pro";
+type MembershipTier = "free" | "founder";
 
 type ListQuery = {
   page?: unknown;
@@ -72,7 +76,7 @@ function normalizeVisibility(input: unknown, fallback: ArticleVisibility): Artic
 function normalizeMembershipTier(input: unknown, fallback: MembershipTier): MembershipTier {
   if (input === undefined || input === null || input === "") return fallback;
   const v = String(input).trim().toLowerCase();
-  if (v === "free" || v === "plus" || v === "pro") return v;
+  if (v === "free" || v === "founder") return v;
   throw new ArticleServiceError("VALIDATION_ERROR", "membership_tier 非法");
 }
 
@@ -151,24 +155,6 @@ async function buildUniqueSlug(baseTitle: string, ignoreId?: string) {
   }
 }
 
-function buildAccess(article: ArticleRow) {
-  if (article.visibility === "public") {
-    return {
-      can_view_full_content: true,
-      required_tier: "free",
-      upgrade_tip: "",
-    };
-  }
-
-  const requiredTier = article.membership_tier || "plus";
-  const canView = requiredTier === "free";
-  return {
-    can_view_full_content: canView,
-    required_tier: requiredTier,
-    upgrade_tip: canView ? "" : `升级到 ${requiredTier} 会员可查看完整内容`,
-  };
-}
-
 function serializeArticle(article: ArticleRow, includeAccess = false) {
   const data = {
     id: article.id,
@@ -192,7 +178,14 @@ function serializeArticle(article: ArticleRow, includeAccess = false) {
   };
 
   if (!includeAccess) return data;
-  return { ...data, access: buildAccess(article) };
+  return {
+    ...data,
+    access: {
+      can_view_full_content: article.visibility === "public",
+      required_tier: article.membership_tier,
+      upgrade_tip: article.visibility === "public" ? "" : "升级会员可查看完整内容",
+    },
+  };
 }
 
 async function getArticleOrThrowById(id: string) {
@@ -236,9 +229,11 @@ export const articleService = {
     };
   },
 
-  async findAppList(query: ListQuery) {
+  async findAppList(query: ListQuery & { user_id?: unknown }) {
     const page = normalizePage(query.page, 1);
     const pageSize = normalizePageSize(query.page_size, 20);
+    const userId = query.user_id ? normalizeString(query.user_id) : "";
+    const membership = userId ? await membershipService.getCurrentMembership(userId) : null;
     const result = await articleRepository.findList({
       page,
       page_size: pageSize,
@@ -250,7 +245,17 @@ export const articleService = {
     });
 
     return {
-      items: result.items.map((item) => serializeArticle(item, true)),
+      items: result.items.map((item) => {
+        const access = canAccessArticleByMembership({
+          membershipState: membership?.membership_state || "free",
+          visibility: item.visibility,
+          requiredTier: item.membership_tier,
+        });
+        return {
+          ...serializeArticle(item, false),
+          access,
+        };
+      }),
       pagination: {
         page,
         page_size: pageSize,
@@ -265,9 +270,18 @@ export const articleService = {
     return serializeArticle(article, false);
   },
 
-  async findBySlug(slug: string) {
+  async findBySlug(slug: string, userId?: string) {
     const article = await getArticleOrThrowBySlug(slug, true);
-    return serializeArticle(article, true);
+    const membership = userId ? await membershipService.getCurrentMembership(userId) : null;
+    const access = canAccessArticleByMembership({
+      membershipState: membership?.membership_state || "free",
+      visibility: article.visibility,
+      requiredTier: article.membership_tier,
+    });
+    return {
+      ...serializeArticle(article, false),
+      access,
+    };
   },
 
   async create(payload: ArticlePayload) {

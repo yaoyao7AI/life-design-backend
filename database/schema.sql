@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS articles (
   content JSON NOT NULL,
   status ENUM('draft', 'published', 'archived') NOT NULL DEFAULT 'draft',
   visibility ENUM('public', 'members_only') NOT NULL DEFAULT 'public',
-  membership_tier ENUM('free', 'plus', 'pro') NOT NULL DEFAULT 'free',
+  membership_tier ENUM('free', 'founder') NOT NULL DEFAULT 'free',
   cover_url VARCHAR(1024) NULL,
   views BIGINT UNSIGNED NOT NULL DEFAULT 0,
   likes BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS membership_plans (
   id CHAR(36) NOT NULL,
   code VARCHAR(80) NOT NULL,
   name VARCHAR(120) NOT NULL,
-  tier ENUM('free', 'plus', 'pro') NOT NULL,
+  tier ENUM('free', 'founder') NOT NULL,
   billing_cycle VARCHAR(32) NOT NULL,
   price_cents INT UNSIGNED NOT NULL DEFAULT 0,
   original_price_cents INT UNSIGNED NULL,
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS membership_plans (
 CREATE TABLE IF NOT EXISTS user_membership (
   id CHAR(36) NOT NULL,
   user_id CHAR(36) NOT NULL,
-  tier ENUM('free', 'plus', 'pro') NOT NULL DEFAULT 'free',
+  tier ENUM('free', 'founder') NOT NULL DEFAULT 'free',
   status ENUM('active', 'expired', 'canceled') NOT NULL DEFAULT 'active',
   start_at DATETIME NOT NULL,
   end_at DATETIME NULL,
@@ -112,3 +112,42 @@ CREATE TABLE IF NOT EXISTS uploads (
   KEY idx_uploads_created_by (created_by),
   KEY idx_uploads_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO membership_plans (
+  id, code, name, tier, billing_cycle, price_cents, original_price_cents,
+  benefits, status, sort_order
+)
+VALUES
+  (
+    'plan_free',
+    'FREE',
+    'Free',
+    'free',
+    'lifetime',
+    0,
+    NULL,
+    JSON_ARRAY('基础阅读权限', '基础愿景功能'),
+    'active',
+    1
+  ),
+  (
+    'plan_founder',
+    'FOUNDER',
+    'Founder',
+    'founder',
+    'lifetime',
+    9900,
+    19900,
+    JSON_ARRAY('会员文章', '无限愿景创建', '高级模板'),
+    'active',
+    2
+  )
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  tier = VALUES(tier),
+  billing_cycle = VALUES(billing_cycle),
+  price_cents = VALUES(price_cents),
+  original_price_cents = VALUES(original_price_cents),
+  benefits = VALUES(benefits),
+  status = VALUES(status),
+  sort_order = VALUES(sort_order);

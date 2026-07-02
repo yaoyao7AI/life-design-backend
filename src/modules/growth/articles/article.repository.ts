@@ -12,7 +12,7 @@ export type ArticleRow = {
   content: unknown;
   status: "draft" | "published" | "archived";
   visibility: "public" | "members_only";
-  membership_tier: "free" | "plus" | "pro";
+  membership_tier: "free" | "founder";
   cover_url: string | null;
   views: number;
   likes: number;
@@ -41,7 +41,7 @@ type CreateArticleInput = {
   content: string;
   status: "draft" | "published" | "archived";
   visibility: "public" | "members_only";
-  membership_tier: "free" | "plus" | "pro";
+  membership_tier: "free" | "founder";
   cover_url: string | null;
   reading_time_minutes: number;
   author_id: string;

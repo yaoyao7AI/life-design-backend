@@ -17,6 +17,14 @@ function handleArticleError(res: Response, error: unknown) {
   });
 }
 
+function readUserId(req: Request) {
+  return (
+    (typeof req.query.user_id === "string" && req.query.user_id) ||
+    (typeof req.headers["x-user-id"] === "string" && req.headers["x-user-id"]) ||
+    ""
+  );
+}
+
 export async function getCmsArticles(req: Request, res: Response) {
   try {
     const data = await articleService.findCmsList(req.query || {});
@@ -73,7 +81,10 @@ export async function publishCmsArticle(req: Request, res: Response) {
 
 export async function getAppArticles(req: Request, res: Response) {
   try {
-    const data = await articleService.findAppList(req.query || {});
+    const data = await articleService.findAppList({
+      ...(req.query || {}),
+      user_id: readUserId(req),
+    });
     return res.status(200).json({ success: true, data, message: "ok" });
   } catch (error) {
     return handleArticleError(res, error);
@@ -82,7 +93,10 @@ export async function getAppArticles(req: Request, res: Response) {
 
 export async function getAppArticleBySlug(req: Request, res: Response) {
   try {
-    const data = await articleService.findBySlug(String(req.params.slug || ""));
+    const data = await articleService.findBySlug(
+      String(req.params.slug || ""),
+      readUserId(req)
+    );
     return res.status(200).json({ success: true, data, message: "ok" });
   } catch (error) {
     return handleArticleError(res, error);
