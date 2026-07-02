@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS articles (
   content JSON NOT NULL,
   status ENUM('draft', 'published', 'archived') NOT NULL DEFAULT 'draft',
   visibility ENUM('public', 'members_only') NOT NULL DEFAULT 'public',
+  membership_tier ENUM('free', 'plus', 'pro') NOT NULL DEFAULT 'free',
   cover_url VARCHAR(1024) NULL,
   views BIGINT UNSIGNED NOT NULL DEFAULT 0,
   likes BIGINT UNSIGNED NOT NULL DEFAULT 0,
