@@ -113,6 +113,63 @@ CREATE TABLE IF NOT EXISTS uploads (
   KEY idx_uploads_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS home_banners (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  title VARCHAR(120) NOT NULL,
+  image_url VARCHAR(1024) NOT NULL,
+  link_url VARCHAR(1024) NULL,
+  status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_home_banners_status_sort (status, sort_order),
+  KEY idx_home_banners_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS home_courses (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  title VARCHAR(160) NOT NULL,
+  subtitle VARCHAR(255) NULL,
+  cover_url VARCHAR(1024) NOT NULL,
+  link_url VARCHAR(1024) NULL,
+  status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_home_courses_status_sort (status, sort_order),
+  KEY idx_home_courses_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS home_sections (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  section_key ENUM('most_popular', 'latest') NOT NULL,
+  title VARCHAR(120) NOT NULL,
+  subtitle VARCHAR(255) NULL,
+  article_limit INT UNSIGNED NOT NULL DEFAULT 6,
+  status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_home_sections_section_key (section_key),
+  KEY idx_home_sections_status_sort (status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS membership_cta (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  title VARCHAR(160) NOT NULL,
+  subtitle VARCHAR(255) NULL,
+  button_text VARCHAR(80) NOT NULL,
+  button_link VARCHAR(1024) NULL,
+  background_image_url VARCHAR(1024) NULL,
+  status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 INSERT INTO membership_plans (
   id, code, name, tier, billing_cycle, price_cents, original_price_cents,
   benefits, status, sort_order
@@ -151,3 +208,37 @@ ON DUPLICATE KEY UPDATE
   benefits = VALUES(benefits),
   status = VALUES(status),
   sort_order = VALUES(sort_order);
+
+INSERT INTO home_sections (
+  section_key, title, subtitle, article_limit, status, sort_order
+)
+VALUES
+  ('most_popular', 'Most Popular', '本周最受欢迎内容', 6, 'active', 1),
+  ('latest', 'Latest', '最新发布内容', 6, 'active', 2)
+ON DUPLICATE KEY UPDATE
+  title = VALUES(title),
+  subtitle = VALUES(subtitle),
+  article_limit = VALUES(article_limit),
+  status = VALUES(status),
+  sort_order = VALUES(sort_order);
+
+INSERT INTO membership_cta (
+  id, title, subtitle, button_text, button_link, background_image_url, status
+)
+VALUES
+  (
+    1,
+    '升级 Founder，解锁完整成长体系',
+    '获取会员文章、无限愿景创建与高级模板能力',
+    '立即升级',
+    '/membership',
+    NULL,
+    'active'
+  )
+ON DUPLICATE KEY UPDATE
+  title = VALUES(title),
+  subtitle = VALUES(subtitle),
+  button_text = VALUES(button_text),
+  button_link = VALUES(button_link),
+  background_image_url = VALUES(background_image_url),
+  status = VALUES(status);

@@ -12,6 +12,7 @@ import {
   membershipRouter,
   cmsMembershipRouter,
 } from "../modules/growth/membership/membership.routes.js";
+import { homeRouter, cmsHomeRouter } from "../modules/growth/home/home.routes.js";
 import uploadRouter from "../modules/upload/upload.routes.js";
 
 const rootRouter = Router();
@@ -27,10 +28,12 @@ rootRouter.get("/health", (_req, res) => {
 rootRouter.use("/api/growth/articles", articlesRouter);
 rootRouter.use("/api/growth/topics", topicsRouter);
 rootRouter.use("/api/growth/membership", jwtAuthStub, membershipRouter);
+rootRouter.use("/api/growth/home", homeRouter);
 
 rootRouter.use("/api/growth/cms/articles", jwtAuthStub, cmsArticlesRouter);
 rootRouter.use("/api/growth/cms/topics", jwtAuthStub, cmsTopicsRouter);
 rootRouter.use("/api/growth/cms/membership", jwtAuthStub, cmsMembershipRouter);
+rootRouter.use("/api/growth/cms/home", jwtAuthStub, cmsHomeRouter);
 rootRouter.use("/api/upload", uploadRouter);
 
 export default rootRouter;
