@@ -5,8 +5,8 @@
   "description": "",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
+    "start": "node --import tsx src/server.ts",
+    "dev": "node --import tsx src/server.ts",
     "test": "node --test ./test/vision-elements-consistency.test.js ./test/publicUploadUrl.test.js ./test/visionTodoUtils.test.js ./test/vision-image-ratio.test.js ./test/parseCompletedFromTodo.test.js ./test/todoAttachmentUtils.test.js",
     "migrate:life-design-v1": "node scripts/migrate-life-design-v1.js",
     "smoke:weekly-report": "node scripts/smoke-weekly-report.js",
@@ -35,6 +35,10 @@
     "pg-hstore": "^2.3.4"
   },
   "devDependencies": {
-    "nodemon": "^3.1.11"
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.0.15",
+    "nodemon": "^3.1.11",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
   }
 }

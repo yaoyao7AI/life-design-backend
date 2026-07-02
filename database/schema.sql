@@ -1,127 +1,96 @@
--- life_design — 全套建表 SQL
--- 请在阿里云 RDS → 数据管理（DMS）→ SQL 控制台执行
+-- Growth CMS foundation schema (Sprint B Step 1)
+-- MySQL 8.0+
 
--- 切换到数据库
-USE life_design;
+SET NAMES utf8mb4;
+SET time_zone = '+00:00';
 
--- ================
--- 1. 用户表 users
--- ================
 CREATE TABLE IF NOT EXISTS users (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    phone VARCHAR(20) UNIQUE NOT NULL,
-    nickname VARCHAR(50),
-    avatar VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  id CHAR(36) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  membership_type ENUM('free', 'founder') NOT NULL DEFAULT 'free',
+  expire_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_users_email (email)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ==========================
--- 2. 肯定语表 affirmations
--- ==========================
-CREATE TABLE IF NOT EXISTS affirmations (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    code VARCHAR(20) UNIQUE NOT NULL,
-    text TEXT NOT NULL,
-    category VARCHAR(20),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS topics (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name VARCHAR(120) NOT NULL,
+  slug VARCHAR(160) NOT NULL,
+  icon_url VARCHAR(1024) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  article_count INT UNSIGNED NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_topics_slug (slug),
+  KEY idx_topics_status_sort (status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =====================
--- 3. 收藏表 favorites
--- =====================
-CREATE TABLE IF NOT EXISTS favorites (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    affirmation_id INT NOT NULL,
-    category VARCHAR(20),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (affirmation_id) REFERENCES affirmations(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS articles (
+  id CHAR(36) NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  title_en VARCHAR(255) NULL,
+  slug VARCHAR(255) NOT NULL,
+  topic_id BIGINT UNSIGNED NULL,
+  content JSON NOT NULL,
+  status ENUM('draft', 'published', 'archived') NOT NULL DEFAULT 'draft',
+  visibility ENUM('public', 'members_only') NOT NULL DEFAULT 'public',
+  cover_url VARCHAR(1024) NULL,
+  views BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  likes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  reading_time_minutes INT UNSIGNED NOT NULL DEFAULT 0,
+  author_id CHAR(36) NOT NULL,
+  published_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_articles_slug (slug),
+  KEY idx_articles_topic_id (topic_id),
+  KEY idx_articles_status_visibility (status, visibility),
+  KEY idx_articles_published_at (published_at),
+  KEY idx_articles_author_id (author_id),
+  CONSTRAINT fk_articles_topic_id FOREIGN KEY (topic_id) REFERENCES topics(id)
+    ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT fk_articles_author_id FOREIGN KEY (author_id) REFERENCES users(id)
+    ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- =========================
--- 4. 愿景板主表 vision_boards
--- =========================
-CREATE TABLE IF NOT EXISTS vision_boards (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    name VARCHAR(100),
-    quadrant VARCHAR(20), -- 健康/工作/爱/兴趣
-    thumbnail VARCHAR(255),
-    background_color VARCHAR(32),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE IF NOT EXISTS membership_plans (
+  id CHAR(36) NOT NULL,
+  code VARCHAR(80) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  tier ENUM('free', 'plus', 'pro') NOT NULL,
+  billing_cycle VARCHAR(32) NOT NULL,
+  price_cents INT UNSIGNED NOT NULL DEFAULT 0,
+  original_price_cents INT UNSIGNED NULL,
+  benefits JSON NULL,
+  status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_membership_plans_code (code),
+  KEY idx_membership_plans_tier_status (tier, status),
+  KEY idx_membership_plans_sort_order (sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ==========================
--- 5. 愿景板元素 vision_elements
--- ==========================
-CREATE TABLE IF NOT EXISTS vision_elements (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    board_id BIGINT NOT NULL,
-    type ENUM('text', 'image') NOT NULL,
-    content TEXT,
-    x FLOAT DEFAULT 0,
-    y FLOAT DEFAULT 0,
-    width FLOAT,
-    height FLOAT,
-    rotation FLOAT DEFAULT 0,
-    font_size INT,
-    color VARCHAR(20),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (board_id) REFERENCES vision_boards(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ======================
--- 6. 练习记录 practice_logs
--- ======================
-CREATE TABLE IF NOT EXISTS practice_logs (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    board_id BIGINT NOT NULL,
-    practice_date DATE NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (board_id) REFERENCES vision_boards(id),
-    UNIQUE (user_id, board_id, practice_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ======================
--- 7. 愿景板待办 vision_board_todos
--- ======================
-CREATE TABLE IF NOT EXISTS vision_board_todos (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_id BIGINT NOT NULL,
-    vision_board_id BIGINT NOT NULL,
-    title VARCHAR(200),
-    content TEXT,
-    image_url VARCHAR(1024),
-    tag VARCHAR(20),
-    occur_at DATETIME(3),
-    sort_order INT NOT NULL DEFAULT 0,
-    linked_todo_id VARCHAR(128),
-    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-    deleted_at DATETIME(3),
-    KEY idx_vbt_user_board (user_id, vision_board_id),
-    KEY idx_vbt_user_board_del_sort (user_id, vision_board_id, deleted_at, sort_order),
-    KEY idx_vbt_user_linked (user_id, linked_todo_id),
-    KEY idx_vbt_user_updated (user_id, updated_at, id),
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (vision_board_id) REFERENCES vision_boards(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
--- ======================
--- 8. 短信验证码 sms_codes（可选，用于之后替换 Supabase OTP）
--- ======================
-CREATE TABLE IF NOT EXISTS sms_codes (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    phone VARCHAR(20) NOT NULL,
-    code VARCHAR(10) NOT NULL,
-    expired_at DATETIME NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX (phone)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-
-
+CREATE TABLE IF NOT EXISTS user_membership (
+  id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  tier ENUM('free', 'plus', 'pro') NOT NULL DEFAULT 'free',
+  status ENUM('active', 'expired', 'canceled') NOT NULL DEFAULT 'active',
+  start_at DATETIME NOT NULL,
+  end_at DATETIME NULL,
+  auto_renew TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_user_membership_user_id (user_id),
+  KEY idx_user_membership_status_end_at (status, end_at),
+  CONSTRAINT fk_user_membership_user_id FOREIGN KEY (user_id) REFERENCES users(id)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
