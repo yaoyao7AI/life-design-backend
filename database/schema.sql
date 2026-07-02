@@ -95,3 +95,20 @@ CREATE TABLE IF NOT EXISTS user_membership (
   CONSTRAINT fk_user_membership_user_id FOREIGN KEY (user_id) REFERENCES users(id)
     ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS uploads (
+  id CHAR(36) NOT NULL,
+  file_name VARCHAR(255) NOT NULL,
+  original_name VARCHAR(255) NOT NULL,
+  mime VARCHAR(120) NOT NULL,
+  size BIGINT UNSIGNED NOT NULL,
+  width INT UNSIGNED NOT NULL DEFAULT 0,
+  height INT UNSIGNED NOT NULL DEFAULT 0,
+  storage_path VARCHAR(1024) NOT NULL,
+  url VARCHAR(1024) NOT NULL,
+  created_by CHAR(36) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_uploads_created_by (created_by),
+  KEY idx_uploads_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

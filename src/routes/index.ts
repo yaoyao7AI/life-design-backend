@@ -12,6 +12,7 @@ import {
   membershipRouter,
   cmsMembershipRouter,
 } from "../modules/growth/membership/membership.routes.js";
+import uploadRouter from "../modules/upload/upload.routes.js";
 
 const rootRouter = Router();
 
@@ -30,5 +31,6 @@ rootRouter.use("/api/growth/membership", jwtAuthStub, membershipRouter);
 rootRouter.use("/api/growth/cms/articles", jwtAuthStub, cmsArticlesRouter);
 rootRouter.use("/api/growth/cms/topics", jwtAuthStub, cmsTopicsRouter);
 rootRouter.use("/api/growth/cms/membership", jwtAuthStub, cmsMembershipRouter);
+rootRouter.use("/api/upload", uploadRouter);
 
 export default rootRouter;
