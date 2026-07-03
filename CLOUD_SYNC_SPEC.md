@@ -61,7 +61,7 @@
 - `content: string`
 - `dueAt: string(ISO)`（可空）
 - `tag: "工作"|"健康"|"兴趣"|"爱"`（前端展示用）
-- `attachments: [{ id, type:"image"|"video", url, fileName? }]`
+- `attachments: [{ id, type:"image"|"video"|"file", url, fileName? }]`
 - `createdAt: number(ms)`
 - `completed: boolean`
 - `completedAt?: number(ms)`
@@ -89,7 +89,7 @@ Attachment 建议字段：
 - `id: string`
 - `user_id: bigint`
 - `todo_id: string`
-- `type: 'image'|'video'`
+- `type: 'image'|'video'|'file'`
 - `url: string`
 - `file_name: string | null`
 - `created_at / updated_at / deleted_at`
@@ -189,6 +189,7 @@ MVP 最低标准：**LWW（最后写入获胜）**
 `PUT /api/todos/:id`
 - Body：可全量或 patch（至少支持：`content/tag/due_at/completed/completed_at/attachments`）
 - 并发：可用 `base_rev` 或 `If-Match: <rev>`
+- `attachments` 新增支持 `type: "file"`（仅 PDF）；单个 Todo 最多 1 个文件附件
 
 #### 3.B.4 删除（软删除）
 `DELETE /api/todos/:id`
@@ -308,6 +309,7 @@ MVP 最低标准：**LWW（最后写入获胜）**
 - `DELETE /api/plans/long-term/:id`
 
 ### Upload（Todo 附件）
-- `POST /api/upload` 支持 `todo-image/todo-video`
+- `POST /api/upload` 支持 `todo-image/todo-video/todo-file`
+- `todo-file` 仅支持 `application/pdf`，单文件不超过 10MB
 
 > 备注：如果前端通过 `/api/proxy/*` 调用，你们也可以像现有路由一样在 `src/app.js` 增加对应的 proxy 挂载（例如 `/api/proxy/todos`、`/api/proxy/sync`）。

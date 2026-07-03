@@ -4,7 +4,7 @@
 
 ### POST /api/upload
 
-**功能：** 文件上传接口，支持头像、愿景板图片和封面图上传
+**功能：** 文件上传接口，支持头像、愿景板图片、封面图以及 Todo 附件上传
 
 ---
 
@@ -26,7 +26,11 @@ Content-Type: multipart/form-data
   - `"avatar"` - 用户头像
   - `"vision-image"` - 愿景板图片元素
   - `"vision-cover"` - 愿景板封面图
+  - `"todo-image"` - Todo 图片附件
+  - `"todo-video"` - Todo 视频附件
+  - `"todo-file"` - Todo 文件附件（仅 PDF）
 - `board_id` (Number, 可选) - 愿景板 ID（当 type 为 `vision-image` 或 `vision-cover` 时必需）
+- `todo_id` (String, 可选) - Todo ID（当 type 为 `todo-image` / `todo-video` / `todo-file` 时建议传入，用于归档目录）
 
 ---
 
@@ -79,13 +83,16 @@ uploads/
 ## 🔒 安全限制
 
 ### 文件大小限制
-- 最大文件大小：**10MB**
+- `todo-file` 最大文件大小：**10MB**
+- 其它上传类型保持现有实现
 
 ### 允许的文件类型
 - `image/jpeg` (JPEG)
 - `image/png` (PNG)
 - `image/webp` (WebP)
 - `image/gif` (GIF)
+- `video/mp4` / `video/webm` / `video/quicktime` / `video/x-m4v`
+- `application/pdf` (仅 `todo-file`)
 
 ### 认证要求
 - 所有上传请求都需要 JWT Token
