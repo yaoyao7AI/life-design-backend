@@ -84,6 +84,7 @@ function serializeSection(item: any) {
     title: item.title,
     subtitle: item.subtitle,
     article_limit: item.article_limit,
+    article_ids: Array.isArray(item.article_ids) ? item.article_ids.map(String) : [],
     status: item.status,
     sort_order: item.sort_order,
     created_at: item.created_at.toISOString(),
@@ -210,6 +211,16 @@ export const homeService = {
       throw new HomeServiceError("VALIDATION_ERROR", "title 不能为空");
     }
 
+    const articleIdsRaw =
+      payload?.article_ids !== undefined
+        ? payload.article_ids
+        : payload?.articleIds !== undefined
+          ? payload.articleIds
+          : existing?.article_ids || [];
+    const article_ids = Array.isArray(articleIdsRaw)
+      ? articleIdsRaw.map((id: unknown) => String(id).trim()).filter(Boolean)
+      : [];
+
     await homeRepository.upsertSection(sectionKey, {
       title,
       subtitle:
@@ -219,11 +230,18 @@ export const homeService = {
       article_limit:
         payload?.article_limit !== undefined
           ? normalizeInt(payload.article_limit, 6)
-          : existing?.article_limit || 6,
+          : payload?.limit !== undefined
+            ? normalizeInt(payload.limit, 6)
+            : existing?.article_limit || 6,
+      article_ids,
       status:
         payload?.status !== undefined
           ? normalizeStatus(payload.status, "active")
-          : existing?.status || "active",
+          : payload?.enabled !== undefined
+            ? payload.enabled
+              ? "active"
+              : "inactive"
+            : existing?.status || "active",
       sort_order:
         payload?.sort_order !== undefined
           ? normalizeSortOrder(payload.sort_order, 0)

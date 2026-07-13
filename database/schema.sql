@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS home_sections (
   title VARCHAR(120) NOT NULL,
   subtitle VARCHAR(255) NULL,
   article_limit INT UNSIGNED NOT NULL DEFAULT 6,
+  article_ids JSON NULL,
   status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
   sort_order INT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

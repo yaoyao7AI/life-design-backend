@@ -33,6 +33,7 @@ export type HomeSectionRow = {
   title: string;
   subtitle: string | null;
   article_limit: number;
+  article_ids: string[];
   status: HomeStatus;
   sort_order: number;
   created_at: Date;
@@ -78,6 +79,22 @@ function mapCourse(row: RowDataPacket): HomeCourseRow {
   };
 }
 
+function parseArticleIds(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+    } catch {
+      return value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+  }
+  return [];
+}
+
 function mapSection(row: RowDataPacket): HomeSectionRow {
   return {
     id: Number(row.id),
@@ -85,6 +102,7 @@ function mapSection(row: RowDataPacket): HomeSectionRow {
     title: String(row.title),
     subtitle: row.subtitle == null ? null : String(row.subtitle),
     article_limit: Number(row.article_limit || 0),
+    article_ids: parseArticleIds(row.article_ids),
     status: row.status === "inactive" ? "inactive" : "active",
     sort_order: Number(row.sort_order || 0),
     created_at: new Date(row.created_at),
@@ -193,47 +211,79 @@ export class HomeRepository {
   }
 
   async findSection(sectionKey: HomeSectionKey): Promise<HomeSectionRow | null> {
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `
-      SELECT id, section_key, title, subtitle, article_limit, status, sort_order, created_at, updated_at
-      FROM home_sections
-      WHERE section_key = ?
-      LIMIT 1
-      `,
-      [sectionKey]
-    );
-    if (!rows.length) return null;
-    return mapSection(rows[0]);
+    try {
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `
+        SELECT id, section_key, title, subtitle, article_limit, article_ids, status, sort_order, created_at, updated_at
+        FROM home_sections
+        WHERE section_key = ?
+        LIMIT 1
+        `,
+        [sectionKey]
+      );
+      if (!rows.length) return null;
+      return mapSection(rows[0]);
+    } catch (error: any) {
+      // 兼容尚未补齐 article_ids 列的旧库
+      if (error?.code !== "ER_BAD_FIELD_ERROR") throw error;
+      const [rows] = await pool.query<RowDataPacket[]>(
+        `
+        SELECT id, section_key, title, subtitle, article_limit, status, sort_order, created_at, updated_at
+        FROM home_sections
+        WHERE section_key = ?
+        LIMIT 1
+        `,
+        [sectionKey]
+      );
+      if (!rows.length) return null;
+      return mapSection(rows[0]);
+    }
   }
 
   async upsertSection(sectionKey: HomeSectionKey, payload: {
     title: string;
     subtitle: string | null;
     article_limit: number;
+    article_ids: string[];
     status: HomeStatus;
     sort_order: number;
   }) {
-    await pool.query(
-      `
-      INSERT INTO home_sections (section_key, title, subtitle, article_limit, status, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        title = VALUES(title),
-        subtitle = VALUES(subtitle),
-        article_limit = VALUES(article_limit),
-        status = VALUES(status),
-        sort_order = VALUES(sort_order),
-        updated_at = CURRENT_TIMESTAMP
-      `,
-      [
-        sectionKey,
-        payload.title,
-        payload.subtitle,
-        payload.article_limit,
-        payload.status,
-        payload.sort_order,
-      ]
-    );
+    const articleIdsJson = JSON.stringify(payload.article_ids || []);
+    const runUpsert = async () => {
+      await pool.query(
+        `
+        INSERT INTO home_sections (section_key, title, subtitle, article_limit, article_ids, status, sort_order)
+        VALUES (?, ?, ?, ?, CAST(? AS JSON), ?, ?)
+        ON DUPLICATE KEY UPDATE
+          title = VALUES(title),
+          subtitle = VALUES(subtitle),
+          article_limit = VALUES(article_limit),
+          article_ids = VALUES(article_ids),
+          status = VALUES(status),
+          sort_order = VALUES(sort_order),
+          updated_at = CURRENT_TIMESTAMP
+        `,
+        [
+          sectionKey,
+          payload.title,
+          payload.subtitle,
+          payload.article_limit,
+          articleIdsJson,
+          payload.status,
+          payload.sort_order,
+        ]
+      );
+    };
+
+    try {
+      await runUpsert();
+    } catch (error: any) {
+      if (error?.code !== "ER_BAD_FIELD_ERROR") throw error;
+      await pool.query(
+        `ALTER TABLE home_sections ADD COLUMN article_ids JSON NULL AFTER article_limit`
+      );
+      await runUpsert();
+    }
   }
 
   async findCourses(activeOnly: boolean): Promise<HomeCourseRow[]> {
