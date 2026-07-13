@@ -56,12 +56,10 @@ cat > "$SNIPPET_FILE" <<EOF
 # other routes keep existing upstream (:${LEGACY_PORT})
 
 location ^~ /uploads/ {
-    proxy_pass http://123.56.17.118:3000/uploads/;
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
+    alias /root/apps/life-design-backend/uploads/;
+    expires 7d;
+    add_header Cache-Control "public";
+    access_log off;
 }
 
 location ^~ /api/growth/ {
