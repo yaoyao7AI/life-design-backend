@@ -45,8 +45,16 @@ function normalizeElementForPersistence(element) {
 }
 
 function normalizeElementForResponse(element) {
+  const type = typeof element?.type === "string" ? element.type : "text";
+  const rawContent = hasOwn(element, "content") ? element.content : null;
+  const content =
+    type === "image" && typeof rawContent === "string" && rawContent
+      ? normalizeUploadsUrl(rawContent)
+      : rawContent;
+
   const output = {
     ...element,
+    content,
     x: toNumberWithDefault(element?.x, 0),
     y: toNumberWithDefault(element?.y, 0),
     width: toOptionalNumber(element?.width),

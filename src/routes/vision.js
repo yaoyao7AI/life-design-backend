@@ -212,7 +212,11 @@ function parseVisionTodoIdInput(value) {
 
 function formatBoard(board) {
   const title = board?.title ?? board?.name ?? null;
-  const coverUrl = board?.cover_url ?? board?.thumbnail ?? null;
+  const rawCoverUrl = board?.cover_url ?? board?.thumbnail ?? null;
+  const coverUrl =
+    typeof rawCoverUrl === "string" && rawCoverUrl
+      ? normalizeUploadsUrl(rawCoverUrl)
+      : rawCoverUrl;
   const backgroundColor =
     board?.background_color ?? board?.backgroundColor ?? board?.bg_color ?? null;
 
@@ -223,7 +227,7 @@ function formatBoard(board) {
     background_color: backgroundColor,
     // 兼容期保留历史字段，确保新旧前端都可读
     name: board?.name ?? title,
-    thumbnail: board?.thumbnail ?? coverUrl,
+    thumbnail: coverUrl,
   };
 }
 
