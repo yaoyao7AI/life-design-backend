@@ -36,6 +36,7 @@ export function ensureTodosVisionColumns(db) {
       await addColumn("energy_feedback", "energy_feedback VARCHAR(20) NULL AFTER ai_tags");
       await addColumn("meaning_feedback", "meaning_feedback VARCHAR(20) NULL AFTER energy_feedback");
       await addColumn("priority", "priority TINYINT NULL AFTER tag");
+      await addColumn("focus_records", "focus_records JSON NULL AFTER priority");
     })().catch((err) => {
       todosVisionColumnsPromise = null;
       throw err;

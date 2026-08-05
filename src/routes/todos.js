@@ -197,6 +197,73 @@ function pickTodoPriority(todo) {
   return undefined;
 }
 
+function parseJsonMaybe(input) {
+  if (input == null) return null;
+  if (typeof input === "object") return input;
+  if (typeof input !== "string") return null;
+  try {
+    return JSON.parse(input);
+  } catch {
+    return null;
+  }
+}
+
+/** 专注记录：undefined=未传，null/[]=清空或空列表，__invalid__=非法 */
+function normalizeFocusRecords(input) {
+  if (input === undefined) return undefined;
+  if (input === null) return null;
+  const raw = typeof input === "string" ? parseJsonMaybe(input) : input;
+  if (!Array.isArray(raw)) return "__invalid__";
+  const out = [];
+  for (const item of raw.slice(0, 200)) {
+    if (!item || typeof item !== "object") continue;
+    const id = String(item.id || "").trim();
+    const todoId = String(item.todoId || item.todo_id || "").trim();
+    if (!id || !todoId) continue;
+    const plannedMinutes = Number(item.plannedMinutes ?? item.planned_minutes);
+    const actualMs = Number(item.actualMs ?? item.actual_ms);
+    const startedAt = Number(item.startedAt ?? item.started_at);
+    const endedAt = Number(item.endedAt ?? item.ended_at);
+    const statusRaw = String(item.status || "").trim().toLowerCase();
+    const status = statusRaw === "cancelled" ? "cancelled" : "completed";
+    if (!Number.isFinite(plannedMinutes) || plannedMinutes < 0) continue;
+    if (!Number.isFinite(actualMs) || actualMs < 0) continue;
+    if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) continue;
+    out.push({
+      id: id.slice(0, 128),
+      todoId: todoId.slice(0, 128),
+      todoContent: String(item.todoContent || item.todo_content || "").trim().slice(0, 200) || undefined,
+      todoTag: item.todoTag || item.todo_tag || undefined,
+      plannedMinutes: Math.min(60, Math.max(0, Math.round(plannedMinutes))),
+      actualMs: Math.min(60 * 60_000, Math.max(0, Math.round(actualMs))),
+      status,
+      startedAt: Math.floor(startedAt),
+      endedAt: Math.floor(endedAt)
+    });
+  }
+  return out;
+}
+
+function pickFocusRecords(todo) {
+  if (todo == null || typeof todo !== "object") return undefined;
+  if (Object.prototype.hasOwnProperty.call(todo, "focus_records")) {
+    return normalizeFocusRecords(todo.focus_records);
+  }
+  if (Object.prototype.hasOwnProperty.call(todo, "focusRecords")) {
+    return normalizeFocusRecords(todo.focusRecords);
+  }
+  const nested = todo.payload;
+  if (nested && typeof nested === "object") {
+    if (Object.prototype.hasOwnProperty.call(nested, "focus_records")) {
+      return normalizeFocusRecords(nested.focus_records);
+    }
+    if (Object.prototype.hasOwnProperty.call(nested, "focusRecords")) {
+      return normalizeFocusRecords(nested.focusRecords);
+    }
+  }
+  return undefined;
+}
+
 function pickSourceValForInsert(todo) {
   if (todo == null || typeof todo !== "object") return null;
   if (!Object.prototype.hasOwnProperty.call(todo, "source")) return null;
@@ -310,6 +377,11 @@ function rowToTodoItem(row) {
     content: row.content,
     tag: row.tag ?? null,
     priority: Number.isInteger(priority) && priority >= 0 && priority <= 5 ? priority : null,
+    focus_records: (() => {
+      const parsed = normalizeFocusRecords(parseJsonMaybe(row.focus_records) ?? row.focus_records);
+      if (parsed === undefined || parsed === "__invalid__") return null;
+      return parsed;
+    })(),
     due_at: row.due_at ? new Date(row.due_at).toISOString() : null,
     completed: !!row.completed,
     completed_at: toIso(row.completed_at),
@@ -385,7 +457,7 @@ async function attachAttachments(db, userId, todos, includeDeleted) {
 async function loadTodoItemForResponse(db, userId, id, includeDeletedAttachments) {
   const [rows] = await db.query(
     `
-      SELECT t.user_id, t.id, t.content, t.tag, t.priority, t.due_at, t.completed, t.completed_at,
+      SELECT t.user_id, t.id, t.content, t.tag, t.priority, t.focus_records, t.due_at, t.completed, t.completed_at,
              t.updated_at, t.deleted_at, t.client_id, t.rev, t.source, t.vision_id,
              t.emotion_before, t.emotion_after, t.energy_before, t.energy_after,
              t.is_active_choice, t.engagement_level, t.completion_feeling, t.life_dimension,
@@ -451,7 +523,7 @@ router.get("/", async (req, res) => {
       : [userId, updatedAt, updatedAt, id, limit];
     const [rows] = await pool.query(
       `
-        SELECT t.user_id, t.id, t.content, t.tag, t.priority, t.due_at, t.completed, t.completed_at,
+        SELECT t.user_id, t.id, t.content, t.tag, t.priority, t.focus_records, t.due_at, t.completed, t.completed_at,
                t.updated_at, t.deleted_at, t.client_id, t.rev, t.source, t.vision_id,
                t.emotion_before, t.emotion_after, t.energy_before, t.energy_after,
                t.is_active_choice, t.engagement_level, t.completion_feeling, t.life_dimension,
@@ -539,6 +611,7 @@ router.post("/", async (req, res) => {
 
   const tag = normalizeTodoTag(todo.tag);
   const priority = pickTodoPriority(todo);
+  const focusRecords = pickFocusRecords(todo);
   const dueAt = todo.due_at ?? todo.dueAt ?? todo.due_time ?? todo.dueTime;
   const dueAtDt = dueAt ? new Date(dueAt) : null;
   const completed = parseCompletedFromTodo(todo);
@@ -586,6 +659,9 @@ router.post("/", async (req, res) => {
   }
   if (priority === "__invalid__") {
     return res.status(400).json({ error: "priority 必须是 0-5 的整数" });
+  }
+  if (focusRecords === "__invalid__") {
+    return res.status(400).json({ error: "focus_records 必须是数组" });
   }
 
   if (!aiTags && deepseekEnabled() && process.env.ENABLE_TODO_AI_TAGGING !== "0") {
@@ -674,13 +750,13 @@ router.post("/", async (req, res) => {
       await connection.query(
         `
           INSERT INTO todos
-            (user_id, id, content, tag, priority, due_at, completed, completed_at,
+            (user_id, id, content, tag, priority, focus_records, due_at, completed, completed_at,
              created_at, updated_at, deleted_at, client_id, last_request_id, rev, source, vision_id,
              emotion_before, emotion_after, energy_before, energy_after, is_active_choice,
              engagement_level, completion_feeling, life_dimension, behavior_type, ai_tags, reflection_note,
              vision_board_id, energy_feedback, meaning_feedback)
           VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           userId,
@@ -688,6 +764,9 @@ router.post("/", async (req, res) => {
           content,
           tag,
           priority === undefined ? null : priority,
+          focusRecords === undefined || focusRecords === null
+            ? null
+            : JSON.stringify(focusRecords),
           dueAtDt,
           completed,
           completedAtDt,
@@ -790,6 +869,10 @@ router.post("/", async (req, res) => {
     if (priority !== undefined) {
       setParts.push("priority = ?");
       updVals.push(priority);
+    }
+    if (focusRecords !== undefined) {
+      setParts.push("focus_records = ?");
+      updVals.push(focusRecords === null ? null : JSON.stringify(focusRecords));
     }
     if (Object.prototype.hasOwnProperty.call(todo, "source")) {
       const s = todo.source;

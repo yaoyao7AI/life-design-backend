@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS todos (
   content VARCHAR(200) NOT NULL,
   tag VARCHAR(20) NULL,
   priority TINYINT NULL,
+  focus_records JSON NULL,
   due_at DATETIME(3) NULL,
   completed TINYINT(1) NOT NULL DEFAULT 0,
   completed_at DATETIME(3) NULL,
