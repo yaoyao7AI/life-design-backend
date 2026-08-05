@@ -338,6 +338,7 @@ export async function ensureSyncSchema() {
     await ensureColumn("todos", "energy_feedback", "energy_feedback VARCHAR(20) NULL AFTER ai_tags");
     await ensureColumn("todos", "meaning_feedback", "meaning_feedback VARCHAR(20) NULL AFTER energy_feedback");
     await ensureColumn("todos", "reflection_note", "reflection_note TEXT NULL");
+    await ensureColumn("todos", "priority", "priority TINYINT NULL AFTER tag");
     await ensureColumn("long_term_plans", "payload", "payload JSON NULL");
     await ensureColumn("long_term_plans", "last_request_id", "last_request_id VARCHAR(64) NULL");
     await ensureColumn("vision_board_todos", "image_url", "image_url VARCHAR(1024) NULL AFTER content");

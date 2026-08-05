@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS todos (
   id VARCHAR(128) NOT NULL,
   content VARCHAR(200) NOT NULL,
   tag VARCHAR(20) NULL,
+  priority TINYINT NULL,
   due_at DATETIME(3) NULL,
   completed TINYINT(1) NOT NULL DEFAULT 0,
   completed_at DATETIME(3) NULL,

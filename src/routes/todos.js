@@ -176,6 +176,27 @@ function normalizeMeaningFeedback(input) {
   return v;
 }
 
+/** 待办优先级 P0–P5；undefined=未传，null=清空，__invalid__=非法 */
+function normalizeTodoPriority(input) {
+  if (input === undefined) return undefined;
+  if (input === null || input === "") return null;
+  const n = Number(input);
+  if (!Number.isInteger(n) || n < 0 || n > 5) return "__invalid__";
+  return n;
+}
+
+function pickTodoPriority(todo) {
+  if (todo == null || typeof todo !== "object") return undefined;
+  if (Object.prototype.hasOwnProperty.call(todo, "priority")) {
+    return normalizeTodoPriority(todo.priority);
+  }
+  const nested = todo.payload;
+  if (nested && typeof nested === "object" && Object.prototype.hasOwnProperty.call(nested, "priority")) {
+    return normalizeTodoPriority(nested.priority);
+  }
+  return undefined;
+}
+
 function pickSourceValForInsert(todo) {
   if (todo == null || typeof todo !== "object") return null;
   if (!Object.prototype.hasOwnProperty.call(todo, "source")) return null;
@@ -280,10 +301,15 @@ async function validateVisionBoardOwnership(db, userId, visionBoardId) {
 }
 
 function rowToTodoItem(row) {
+  const priority =
+    row.priority === undefined || row.priority === null || row.priority === ""
+      ? null
+      : Number(row.priority);
   return {
     id: row.id,
     content: row.content,
     tag: row.tag ?? null,
+    priority: Number.isInteger(priority) && priority >= 0 && priority <= 5 ? priority : null,
     due_at: row.due_at ? new Date(row.due_at).toISOString() : null,
     completed: !!row.completed,
     completed_at: toIso(row.completed_at),
@@ -359,7 +385,7 @@ async function attachAttachments(db, userId, todos, includeDeleted) {
 async function loadTodoItemForResponse(db, userId, id, includeDeletedAttachments) {
   const [rows] = await db.query(
     `
-      SELECT t.user_id, t.id, t.content, t.tag, t.due_at, t.completed, t.completed_at,
+      SELECT t.user_id, t.id, t.content, t.tag, t.priority, t.due_at, t.completed, t.completed_at,
              t.updated_at, t.deleted_at, t.client_id, t.rev, t.source, t.vision_id,
              t.emotion_before, t.emotion_after, t.energy_before, t.energy_after,
              t.is_active_choice, t.engagement_level, t.completion_feeling, t.life_dimension,
@@ -425,7 +451,7 @@ router.get("/", async (req, res) => {
       : [userId, updatedAt, updatedAt, id, limit];
     const [rows] = await pool.query(
       `
-        SELECT t.user_id, t.id, t.content, t.tag, t.due_at, t.completed, t.completed_at,
+        SELECT t.user_id, t.id, t.content, t.tag, t.priority, t.due_at, t.completed, t.completed_at,
                t.updated_at, t.deleted_at, t.client_id, t.rev, t.source, t.vision_id,
                t.emotion_before, t.emotion_after, t.energy_before, t.energy_after,
                t.is_active_choice, t.engagement_level, t.completion_feeling, t.life_dimension,
@@ -512,6 +538,7 @@ router.post("/", async (req, res) => {
   if (content.length > 200) return res.status(400).json({ error: "content 超过 200 字" });
 
   const tag = normalizeTodoTag(todo.tag);
+  const priority = pickTodoPriority(todo);
   const dueAt = todo.due_at ?? todo.dueAt ?? todo.due_time ?? todo.dueTime;
   const dueAtDt = dueAt ? new Date(dueAt) : null;
   const completed = parseCompletedFromTodo(todo);
@@ -556,6 +583,9 @@ router.post("/", async (req, res) => {
   }
   if (meaningFeedback === "__invalid__") {
     return res.status(400).json({ error: "meaning_feedback 必须为 high/medium/low" });
+  }
+  if (priority === "__invalid__") {
+    return res.status(400).json({ error: "priority 必须是 0-5 的整数" });
   }
 
   if (!aiTags && deepseekEnabled() && process.env.ENABLE_TODO_AI_TAGGING !== "0") {
@@ -644,19 +674,20 @@ router.post("/", async (req, res) => {
       await connection.query(
         `
           INSERT INTO todos
-            (user_id, id, content, tag, due_at, completed, completed_at,
+            (user_id, id, content, tag, priority, due_at, completed, completed_at,
              created_at, updated_at, deleted_at, client_id, last_request_id, rev, source, vision_id,
              emotion_before, emotion_after, energy_before, energy_after, is_active_choice,
              engagement_level, completion_feeling, life_dimension, behavior_type, ai_tags, reflection_note,
              vision_board_id, energy_feedback, meaning_feedback)
           VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           userId,
           id,
           content,
           tag,
+          priority === undefined ? null : priority,
           dueAtDt,
           completed,
           completedAtDt,
@@ -756,6 +787,10 @@ router.post("/", async (req, res) => {
       requestId,
       now
     ];
+    if (priority !== undefined) {
+      setParts.push("priority = ?");
+      updVals.push(priority);
+    }
     if (Object.prototype.hasOwnProperty.call(todo, "source")) {
       const s = todo.source;
       setParts.push("source = ?");
