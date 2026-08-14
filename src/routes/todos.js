@@ -138,7 +138,10 @@ function pickVisionIdForTodo(todo) {
   const raw =
     Object.prototype.hasOwnProperty.call(todo, "vision_id") || Object.prototype.hasOwnProperty.call(todo, "visionId")
       ? todo.vision_id ?? todo.visionId
-      : undefined;
+      : Object.prototype.hasOwnProperty.call(todo, "vision_board_id") ||
+          Object.prototype.hasOwnProperty.call(todo, "visionBoardId")
+        ? todo.vision_board_id ?? todo.visionBoardId
+        : undefined;
   if (raw === undefined) return null;
   if (raw === null || raw === "") return null;
   const n = Number(raw);
@@ -208,7 +211,7 @@ function parseJsonMaybe(input) {
   }
 }
 
-/** 专注记录：undefined=未传，null/[]=清空或空列表，__invalid__=非法 */
+/** 专注记录：undefined=未传，null=清空，[]=空列表，__invalid__=非法 */
 function normalizeFocusRecords(input) {
   if (input === undefined) return undefined;
   if (input === null) return null;
@@ -244,6 +247,21 @@ function normalizeFocusRecords(input) {
   return out;
 }
 
+/** 按 id 合并专注记录；同 id 取 endedAt 更新的一侧，避免客户端残缺列表覆盖丢会话 */
+function mergeFocusRecords(existing, incoming) {
+  const map = new Map();
+  for (const item of [...(existing || []), ...(incoming || [])]) {
+    if (!item || !item.id) continue;
+    const prev = map.get(item.id);
+    if (!prev || Number(item.endedAt) >= Number(prev.endedAt)) {
+      map.set(item.id, item);
+    }
+  }
+  return Array.from(map.values())
+    .sort((a, b) => Number(b.endedAt) - Number(a.endedAt))
+    .slice(0, 200);
+}
+
 function pickFocusRecords(todo) {
   if (todo == null || typeof todo !== "object") return undefined;
   if (Object.prototype.hasOwnProperty.call(todo, "focus_records")) {
@@ -266,10 +284,15 @@ function pickFocusRecords(todo) {
 
 function pickSourceValForInsert(todo) {
   if (todo == null || typeof todo !== "object") return null;
-  if (!Object.prototype.hasOwnProperty.call(todo, "source")) return null;
-  const s = todo.source;
-  if (s === undefined || s === null || s === "") return null;
-  return String(s).trim().slice(0, 32);
+  if (Object.prototype.hasOwnProperty.call(todo, "source")) {
+    const s = todo.source;
+    if (s !== undefined && s !== null && s !== "") return String(s).trim().slice(0, 32);
+  }
+  const cs = String(todo.client_source ?? todo.clientSource ?? "")
+    .trim()
+    .toLowerCase();
+  if (cs === "vision" || cs === "plan") return cs;
+  return null;
 }
 
 function isBase64DataUrl(value) {
@@ -699,7 +722,7 @@ router.post("/", async (req, res) => {
 
     const [existingRows] = await connection.query(
       `
-        SELECT rev, updated_at, deleted_at, last_request_id
+        SELECT rev, updated_at, deleted_at, last_request_id, focus_records
         FROM todos
         WHERE user_id = ? AND id = ?
         FOR UPDATE
@@ -872,7 +895,16 @@ router.post("/", async (req, res) => {
     }
     if (focusRecords !== undefined) {
       setParts.push("focus_records = ?");
-      updVals.push(focusRecords === null ? null : JSON.stringify(focusRecords));
+      if (focusRecords === null) {
+        updVals.push(null);
+      } else {
+        const existingFocus = normalizeFocusRecords(
+          parseJsonMaybe(existing.focus_records) ?? existing.focus_records
+        );
+        const base = Array.isArray(existingFocus) ? existingFocus : [];
+        const merged = mergeFocusRecords(base, focusRecords);
+        updVals.push(JSON.stringify(merged));
+      }
     }
     if (Object.prototype.hasOwnProperty.call(todo, "source")) {
       const s = todo.source;

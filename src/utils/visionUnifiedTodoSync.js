@@ -67,11 +67,11 @@ export async function upsertUnifiedTodoFromVisionRow(conn, userId, row) {
       `
         INSERT INTO todos
           (user_id, id, content, tag, due_at, completed, completed_at,
-           created_at, updated_at, deleted_at, client_id, last_request_id, rev, source, vision_id)
+           created_at, updated_at, deleted_at, client_id, last_request_id, rev, source, vision_id, vision_board_id)
         VALUES
-          (?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, 1, 'vision', ?)
+          (?, ?, ?, ?, ?, 0, NULL, ?, ?, NULL, NULL, NULL, 1, 'vision', ?, ?)
       `,
-      [userId, id, content, tag, dueAt, createdAt, updatedAt, boardId]
+      [userId, id, content, tag, dueAt, createdAt, updatedAt, boardId, String(boardId)]
     );
   } else {
     await conn.query(
@@ -84,10 +84,11 @@ export async function upsertUnifiedTodoFromVisionRow(conn, userId, row) {
             rev = rev + 1,
             deleted_at = NULL,
             source = 'vision',
-            vision_id = ?
+            vision_id = ?,
+            vision_board_id = ?
         WHERE user_id = ? AND id = ?
       `,
-      [content, tag, dueAt, updatedAt, boardId, userId, id]
+      [content, tag, dueAt, updatedAt, boardId, String(boardId), userId, id]
     );
   }
 }
